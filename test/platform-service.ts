@@ -19,7 +19,6 @@ import {DevicePlatformsConstants} from "../lib/common/mobile/device-platforms-co
 import { XmlValidator } from "../lib/xml-validator";
 import * as ChildProcessLib from "../lib/common/child-process";
 
-require("should");
 let temp = require("temp");
 temp.track();
 
