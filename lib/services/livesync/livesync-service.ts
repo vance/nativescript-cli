@@ -83,7 +83,7 @@ class LiveSyncService implements ILiveSyncService {
 		// TODO: We need to execute beforePrepare hooks here to kickstart the TypeScript compilation...
 
 		let project = <IProject>this.$injector.resolve("project", { path: this.$projectData.projectDir });
-		let projectBuildResult = project.rebuild().wait();
+		let projectBuildResult = project.rebuild(platform).wait();
 		console.log("Scripts changed: " + projectBuildResult.changedScripts);
 		console.log("Native changed: " + projectBuildResult.changedNativeProject);
 

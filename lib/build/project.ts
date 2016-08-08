@@ -1,51 +1,61 @@
-import { existsSync, writeFileSync, readFileSync, readdirSync, lstatSync, mkdirSync, linkSync, unlinkSync, rmdirSync } from "fs";
 import { join, sep, dirname, basename } from "path";
 import * as semver from "semver";
-
-function track<T>(label: string, task: () => T): T {
-    console.log(label + "...");
-    console.time(label);
-    let result = task();
-    if (result instanceof Promise) {
-        (<any>result).then(() => console.timeEnd(label));
-    } else {
-        console.timeEnd(label);
-    }
-    return result;
-}
 
 export class Project implements IProject {
 
     public source: Project.Source;
 
-    constructor(public path: string) {
-        console.log("new project at: " + this.path);
-        // TODO: Test all with --path projectpath, the current code assumes cwd is at the project root.
+    constructor(public path: string,
+        public $fs: IFileSystem,
+        public $logger: ILogger) {
+
+        this.$logger.trace("New project to prepare at: " + this.path);
     }
 
-    public rebuild(): IFuture<IProjectBuildResult> {
+    public rebuild(platform: string): IFuture<IProjectBuildResult> {
         return (() =>  {
+            this.$logger.info("Project rebuild " + platform + " ...");
             let projectBuildResult: IProjectBuildResult;
 
-            track("rebuild", () => {
+            this.track("rebuild", () => {
 
-                this.source = new Project.Source(this.path, ["ios", "android"]);
+                this.source = new Project.Source(this, ["ios", "android"], this.$fs, this.$logger);
 
                 let platforms = {
-                    ios: new Project.Target.iOS(this),
-                    android: new Project.Target.Android(this)
+                    ios: new Project.Target.iOS(this, this.$fs, this.$logger),
+                    android: new Project.Target.Android(this, this.$fs, this.$logger)
                 }
 
                 // Populate the project build result... per platform...
-                platforms.ios.rebuild();
-                platforms.android.rebuild();
+                switch(platform) {
+                    case "ios":
+                        platforms.ios.rebuild();
+                        projectBuildResult = platforms.ios.projectBuildResult;
+                        break;
+                    case "android":
+                        platforms.android.rebuild();
+                        projectBuildResult = platforms.android.projectBuildResult;
+                        break;
+                }
 
                 // TODO: Provide platform outside
                 projectBuildResult = platforms.ios.projectBuildResult;
             });
 
+            this.$logger.info("Project rebuild " + platform + " ✔");
             return projectBuildResult;
         }).future<IProjectBuildResult>()();
+    }
+
+    public track<T>(label: string, task: () => T): T {
+        this.$logger.trace(label + " ...");
+        let result = task();
+        if (result instanceof Promise) {
+            (<any>result).then(() => this.$logger.trace(label + " ✔"));
+        } else {
+            this.$logger.trace(label + " ✔")
+        }
+        return result;
     }
 }
 $injector.register("project", Project);
@@ -99,7 +109,11 @@ export namespace Project {
         public app: Package;
         public packages: PackageMap;
 
-        constructor(private path: string, public platforms: string[]) {
+        constructor(private project: Project,
+            public platforms: string[],
+            private $fs: IFileSystem,
+            private $logger: ILogger) {
+
             this.app = {
                 type: Package.Type.App,
                 name: ".",
@@ -116,23 +130,25 @@ export namespace Project {
             }
             this.packages = {};
 
-            track("read dependencies", () => this.selectDependencyPackages(this.app));
-            track("read dependency files", () => this.listPackageFiles(this.app));
-            track("read app files", () => this.listAppFiles());
+            project.track("read dependencies", () => this.selectDependencyPackages(this.app));
+            project.track("read dependency files", () => this.listPackageFiles(this.app));
+            project.track("read app files", () => this.listAppFiles());
 
-            // TODO: If verbose...
-            // TODO: Implement diagnostics and warn problems even in non-verbose mode.
-            // this.printPackages();
+            let level = this.$logger.getLevel();
+            if (level === "TRACE" || level == "DEBUG") {
+                this.printPackages();
+            }
 
-            // TODO: If extremely verbose
-            // this.printFiles();
+            if (level === "DEBUG") {
+                this.printFiles();
+            }
         }
 
         private selectDependencyPackages(pack: Package) {
 
             let packageJsonPath = join(pack.path, "package.json");
 
-            if (!existsSync(packageJsonPath)) {
+            if (!this.$fs.exists(packageJsonPath).wait()) {
                 pack.availability = Package.Availability.NotInstalled;
                 return;
             }
@@ -143,7 +159,7 @@ export namespace Project {
             }
 
             // TODO: mind BOM
-            pack.packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+            pack.packageJson = JSON.parse(this.$fs.readText(packageJsonPath).wait());
             pack.version = pack.packageJson.version;
 
             if (pack.type === Package.Type.App) {
@@ -204,16 +220,16 @@ export namespace Project {
                 ["app" + sep + "App_Resources"]: true
             };
 
-            if (existsSync(appPath)) {
+            if (this.$fs.exists(appPath).wait()) {
                 this.app.directories.push("app/");
                 let listAppFiles = (path: string) => {
-                    readdirSync(path).forEach(f => {
+                    this.$fs.readDirectory(path).wait().forEach(f => {
                         let filePath = path + sep + f;
                         if (filePath in ignoreFiles) {
                             return;
                         }
                         let dirPath = filePath + sep;
-                        let lstat = lstatSync(filePath);
+                        let lstat = this.$fs.getFsStats(filePath).wait();
                         if (lstat.isDirectory()) {
                             this.app.directories.push(dirPath);
                             listAppFiles(filePath);
@@ -241,16 +257,16 @@ export namespace Project {
                 [pack.path + sep + "platforms"]: true
             };
             let scopePathLength = fileScope.path.length + sep.length;
-            readdirSync(dirPath).forEach(childPath => {
+            this.$fs.readDirectory(dirPath).wait().forEach(childPath => {
                 let path = dirPath + sep + childPath;
                 if (path in ignorePaths) {
                     return;
                 }
-                let stat = lstatSync(path);
+                let stat = this.$fs.getFsStats(path).wait();
                 if (stat.isDirectory()) {
                     let packageJsonPath = path + sep + "package.json";
-                    if (modulePackageJson != packageJsonPath && existsSync(packageJsonPath)) {
-                        let packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+                    if (modulePackageJson != packageJsonPath && this.$fs.exists(packageJsonPath).wait()) {
+                        let packageJson = JSON.parse(this.$fs.readText(packageJsonPath).wait());
 
                         let nestedPackage: Package = {
                             type: Package.Type.Nested,
@@ -304,7 +320,7 @@ export namespace Project {
             }
 
             let printPackagesRecursive = (pack: Package, ident: string, parentIsLast: boolean) => {
-                console.log(ident + (this.app === pack ? "" : (parentIsLast ? "└── " : "├── ")) + avSign[pack.availability] + " " + pack.name + (pack.version ? "@" + pack.version : "") + " " + avLabel[pack.availability] + (pack.scriptFiles.length > 0 ? "(" + pack.scriptFiles.length + ")" : ""));
+                this.$logger.trace(ident + (this.app === pack ? "" : (parentIsLast ? "└── " : "├── ")) + avSign[pack.availability] + " " + pack.name + (pack.version ? "@" + pack.version : "") + " " + avLabel[pack.availability] + (pack.scriptFiles.length > 0 ? "(" + pack.scriptFiles.length + ")" : ""));
                 pack.children.forEach((child, index, children) => {
                     let isLast = index === children.length - 1;
                     printPackagesRecursive(child, ident + (this.app === pack ? "" : (parentIsLast ? "    " : "│   ")), isLast);
@@ -315,12 +331,12 @@ export namespace Project {
         }
 
         private printFiles() {
-            console.log("app: " + this.app.name);
-            this.app.scriptFiles.forEach(f => console.log("  " + f));
+            this.$logger.debug("app: " + this.app.name);
+            this.app.scriptFiles.forEach(f => this.$logger.debug("  " + f));
             Object.keys(this.packages).forEach(dependecy => {
                 let pack = this.packages[dependecy];
-                console.log("dependency: " + pack.name + " at " + pack.path);
-                pack.scriptFiles.forEach(f => console.log("  " + f));
+                this.$logger.debug("dependency: " + pack.name + " at " + pack.path);
+                pack.scriptFiles.forEach(f => this.$logger.debug("  " + f));
             })
         }
     }
@@ -334,33 +350,40 @@ export namespace Project {
 
         private source: Source;
 
-        constructor(private project: Project, private platform: string, private output: Target.OutPaths) {
+        constructor(private project: Project,
+            private platform: string,
+            private output: Target.OutPaths,
+            public $fs: IFileSystem,
+            public $logger: ILogger) {
+
             this.source = project.source;
         }
 
         public rebuild() {
-            track("rebuild " + this.platform, () => {
-                let delta = track("rebuild delta", () => this.rebuildDelta());
+            this.project.track("rebuild " + this.platform, () => {
+                let delta = this.project.track("rebuild delta", () => this.rebuildDelta());
 
                 // Very verbose:
-                this.printDelta(delta);
+                if (this.$logger.getLevel() === "DEBUG") {
+                    this.printDelta(delta);
+                }
 
-                track("apply delta", () => this.applyDelta(delta));
+                this.project.track("apply delta", () => this.applyDelta(delta));
             });
         }
 
         private printDelta(delta: Target.Delta) {
-            console.log("mkdir:");
-            Object.keys(delta.mkdir).sort().forEach(d => console.log("    " + d));
+            this.$logger.debug("mkdir:");
+            Object.keys(delta.mkdir).sort().forEach(d => this.$logger.debug("    " + d));
 
-            console.log("copy:");
-            Object.keys(delta.copy).sort().forEach(f => console.log("    " + f + " < " + delta.copy[f]));
+            this.$logger.debug("copy:");
+            Object.keys(delta.copy).sort().forEach(f => this.$logger.debug("    " + f + " < " + delta.copy[f]));
 
-            console.log("rmfile:");
-            Object.keys(delta.rmfile).sort().forEach(f => console.log("    " + f));
+            this.$logger.debug("rmfile:");
+            Object.keys(delta.rmfile).sort().forEach(f => this.$logger.debug("    " + f));
 
-            console.log("rmdir:");
-            Object.keys(delta.rmdir).sort().reverse().forEach(d => console.log("    " + d));
+            this.$logger.debug("rmdir:");
+            Object.keys(delta.rmdir).sort().reverse().forEach(d => this.$logger.debug("    " + d));
         }
 
         private buildDelta(): Target.Delta {
@@ -450,18 +473,18 @@ export namespace Project {
                 diffed[filePath] = true;
 
                 let dirPath = filePath + sep;
-                let targetStat = lstatSync(filePath);
+                let targetStat = this.$fs.getFsStats(filePath).wait();
                 if (targetStat.isDirectory()) {
                     if (dirPath in delta.mkdir) {
                         delete delta.mkdir[dirPath];
                     } else {
                         delta.rmdir[dirPath] = true;
                     }
-                    readdirSync(filePath).forEach(f => diff(dirPath + f));
+                    this.$fs.readDirectory(filePath).wait().forEach(f => diff(dirPath + f));
                 } else if (targetStat.isFile()) {
                     if (filePath in delta.copy) {
                         let source = delta.copy[filePath];
-                        let srcStat = lstatSync(source);
+                        let srcStat = this.$fs.getFsStats(source).wait();
                         let newer = targetStat.mtime.getTime() < srcStat.mtime.getTime();
                         if (!newer) {
                             delete delta.copy[filePath];
@@ -472,14 +495,14 @@ export namespace Project {
                 }
             };
 
-            if (existsSync(this.output.app)) {
+            if (this.$fs.exists(this.output.app).wait()) {
                 diff(this.output.app);
             }
-            utils.path.basedirs(this.output.app).filter(dir => existsSync(dir) && dir in delta.mkdir).forEach(dir => delete delta.mkdir[dir]);
-            if (existsSync(this.output.modules)) {
+            utils.path.basedirs(this.output.app).filter(dir => this.$fs.exists(dir).wait() && dir in delta.mkdir).forEach(dir => delete delta.mkdir[dir]);
+            if (this.$fs.exists(this.output.modules).wait()) {
                 diff(this.output.modules);
             }
-            utils.path.basedirs(this.output.modules).filter(dir => existsSync(dir) && dir in delta.mkdir).forEach(dir => delete delta.mkdir[dir]);
+            utils.path.basedirs(this.output.modules).filter(dir => this.$fs.exists(dir).wait() && dir in delta.mkdir).forEach(dir => delete delta.mkdir[dir]);
 
             return delta;
         }
@@ -490,15 +513,15 @@ export namespace Project {
             let rmfile = Object.keys(delta.rmfile);
             let rmdir = Object.keys(delta.rmdir).sort().reverse();
 
-            mkdir.forEach(dir => mkdirSync(dir));
+            mkdir.forEach(dir => this.$fs.createDirectory(dir).wait());
             copy.forEach(to => {
                 let from = delta.copy[to];
-                writeFileSync(to, readFileSync(from));
-                // linkSync(from, to);
-                // linkSync
+                this.$fs.copyFile(from, to).wait();
+                // TODO: Sync is fast on my mac, profile the async version... 
+                // writeFileSync(to, readFileSync(from));
             });
-            rmfile.forEach(file => unlinkSync(file));
-            rmdir.forEach(dir => rmdirSync(dir));
+            rmfile.forEach(file => this.$fs.deleteFile(file));
+            rmdir.forEach(dir => this.$fs.deleteDirectory(dir));
 
             this.projectBuildResult.changedScripts = copy.length > 0 || rmfile.length > 0;
         }
@@ -518,21 +541,27 @@ export namespace Project {
         }
 
         export class iOS extends Target {
-            constructor(project: Project) {
+            constructor(project: Project,
+                $fs: IFileSystem,
+                $logger: ILogger) {
+
                 super(project, "ios", {
                     // TODO: This basename tries to figure out the xcode project name... inject from outside.
                     app: join("platforms", "ios", basename(project.path), "app"),
                     modules: join("platforms", "ios", basename(project.path), "app", "tns_modules")
-                });
+                }, $fs, $logger);
             }
         }
 
         export class Android extends Target {
-            constructor(project: Project) {
+            constructor(project: Project,
+                $fs: IFileSystem,
+                $logger: ILogger) {
+
                 super(project, "android", {
                     app: join("platforms", "android", "src", "main", "assets", "app"),
                     modules: join("platforms", "android", "src", "main", "assets", "app", "tns_modules")
-                });
+                }, $fs, $logger);
             }
         }
     }

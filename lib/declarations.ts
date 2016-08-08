@@ -368,5 +368,5 @@ interface IProjectBuildResult {
 }
 
 interface IProject {
-	rebuild(): IFuture<IProjectBuildResult>;
+	rebuild(platform: string): IFuture<IProjectBuildResult>;
 }
