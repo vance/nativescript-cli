@@ -362,3 +362,11 @@ interface IXcprojInfo {
 	xcprojAvailable: boolean;
 }
 
+interface IProjectBuildResult {
+	changedScripts: boolean;
+	changedNativeProject: boolean;
+}
+
+interface IProject {
+	rebuild(): IFuture<IProjectBuildResult>;
+}
