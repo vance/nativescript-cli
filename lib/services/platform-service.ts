@@ -32,7 +32,8 @@ export class PlatformService implements IPlatformService {
 		private $npm: INodePackageManager,
 		private $sysInfo: ISysInfo,
 		private $staticConfig: Config.IStaticConfig,
-		private $childProcess: IChildProcess) { }
+		private $childProcess: IChildProcess,
+		private $injector: IInjector) { }
 
 	public addPlatforms(platforms: string[]): IFuture<void> {
 		return (() => {
@@ -226,6 +227,29 @@ export class PlatformService implements IPlatformService {
 
 			return this.preparePlatformCore(platform).wait();
 		}).future<boolean>()();
+	}
+
+	public preparePlatform2(platform: string): IFuture<IProjectBuildResult> {
+		return (() => {
+			// TODO: Do the checks from the original preparePlatform
+			// TODO: Split the preparation of plugins in two - one for the script files and second for the native resources.
+			return this.preparePlatformCore2(platform).wait();
+		}).future<IProjectBuildResult>()();
+	}
+
+	@helpers.hook('prepare')
+	private preparePlatformCore2(platform: string): IFuture<IProjectBuildResult> {
+		return (() => {
+			// Some checks... verify if we need to do them on livesync
+			let project = <IProject>this.$injector.resolve("project", { path: this.$projectData.projectDir });
+			let projectBuildResult = project.rebuild(platform).wait();
+			console.log("Scripts changed: " + projectBuildResult.changedScripts);
+			console.log("Native changed: " + projectBuildResult.changedNativeProject);
+
+			// TODO: If changedNativeProject, handover the prepare to the old prepare...
+
+			return projectBuildResult;
+		}).future<IProjectBuildResult>()();
 	}
 
 	@helpers.hook('prepare')

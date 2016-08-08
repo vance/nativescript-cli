@@ -80,24 +80,16 @@ class LiveSyncService implements ILiveSyncService {
 	private prepareLiveSyncData(platform: string): ILiveSyncData {
 		platform = platform || this.$devicesService.platform;
 
-		// TODO: We need to execute beforePrepare hooks here to kickstart the TypeScript compilation...
-
-		let project = <IProject>this.$injector.resolve("project", { path: this.$projectData.projectDir });
-		let projectBuildResult = project.rebuild(platform).wait();
-		console.log("Scripts changed: " + projectBuildResult.changedScripts);
-		console.log("Native changed: " + projectBuildResult.changedNativeProject);
-
 		// TODO: We need to separate the script prepare and native code prepare in this.$platformService.preparePlatform(platform.toLowerCase()).wait()
 		// So that we can use the above code, or the WebPack in place of the scripts preparation, but still use existing native preparation.
 
 		// TODO: Remove or refactor:
 		// if (!this.$platformService.preparePlatform(platform.toLowerCase()).wait()) {
-		// 		this.$errors.failWithoutHelp("Verify that listed files are well-formed and try again the operation.");
+		// 	this.$errors.failWithoutHelp("Verify that listed files are well-formed and try again the operation.");
 		// }
 
-		if (projectBuildResult.changedNativeProject) {
-			// TODO: If there are changes in native code - build
-		}
+		let projectBuildResult = this.$platformService.preparePlatform2(platform.toLowerCase()).wait();
+		// TODO: Some errors were triggering: this.$errors.failWithoutHelp("Verify that listed files are well-formed and try again the operation.");
 
 		let platformData = this.$platformsData.getPlatformData(platform.toLowerCase());
 		if (this.$mobileHelper.isAndroidPlatform(platform)) {
