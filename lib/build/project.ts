@@ -9,7 +9,7 @@ export class Project implements IProject {
         public $fs: IFileSystem,
         public $logger: ILogger) {
 
-        this.$logger.trace("New project to prepare at: " + this.path);
+        this.$logger.trace("Project at: " + this.path);
     }
 
     public rebuild(platform: string): IFuture<IProjectBuildResult> {
@@ -146,7 +146,7 @@ export namespace Project {
 
         private selectDependencyPackages(pack: Package) {
 
-            let packageJsonPath = join(pack.path, "package.json");
+            let packageJsonPath = join(this.project.path, pack.path, "package.json");
 
             if (!this.$fs.exists(packageJsonPath).wait()) {
                 pack.availability = Package.Availability.NotInstalled;
@@ -220,16 +220,16 @@ export namespace Project {
                 ["app" + sep + "App_Resources"]: true
             };
 
-            if (this.$fs.exists(appPath).wait()) {
+            if (this.$fs.exists(join(this.project.path, appPath)).wait()) {
                 this.app.directories.push("app/");
                 let listAppFiles = (path: string) => {
-                    this.$fs.readDirectory(path).wait().forEach(f => {
+                    this.$fs.readDirectory(join(this.project.path, path)).wait().forEach(f => {
                         let filePath = path + sep + f;
                         if (filePath in ignoreFiles) {
                             return;
                         }
                         let dirPath = filePath + sep;
-                        let lstat = this.$fs.getFsStats(filePath).wait();
+                        let lstat = this.$fs.getFsStats(join(this.project.path, filePath)).wait();
                         if (lstat.isDirectory()) {
                             this.app.directories.push(dirPath);
                             listAppFiles(filePath);
@@ -257,16 +257,16 @@ export namespace Project {
                 [pack.path + sep + "platforms"]: true
             };
             let scopePathLength = fileScope.path.length + sep.length;
-            this.$fs.readDirectory(dirPath).wait().forEach(childPath => {
+            this.$fs.readDirectory(join(this.project.path, dirPath)).wait().forEach(childPath => {
                 let path = dirPath + sep + childPath;
                 if (path in ignorePaths) {
                     return;
                 }
-                let stat = this.$fs.getFsStats(path).wait();
+                let stat = this.$fs.getFsStats(join(this.project.path, path)).wait();
                 if (stat.isDirectory()) {
                     let packageJsonPath = path + sep + "package.json";
-                    if (modulePackageJson != packageJsonPath && this.$fs.exists(packageJsonPath).wait()) {
-                        let packageJson = JSON.parse(this.$fs.readText(packageJsonPath).wait());
+                    if (modulePackageJson != packageJsonPath && this.$fs.exists(join(this.project.path, packageJsonPath)).wait()) {
+                        let packageJson = JSON.parse(this.$fs.readText(join(this.project.path, packageJsonPath)).wait());
 
                         let nestedPackage: Package = {
                             type: Package.Type.Nested,
@@ -473,18 +473,18 @@ export namespace Project {
                 diffed[filePath] = true;
 
                 let dirPath = filePath + sep;
-                let targetStat = this.$fs.getFsStats(filePath).wait();
+                let targetStat = this.$fs.getFsStats(join(this.project.path, filePath)).wait();
                 if (targetStat.isDirectory()) {
                     if (dirPath in delta.mkdir) {
                         delete delta.mkdir[dirPath];
                     } else {
                         delta.rmdir[dirPath] = true;
                     }
-                    this.$fs.readDirectory(filePath).wait().forEach(f => diff(dirPath + f));
+                    this.$fs.readDirectory(join(this.project.path, filePath)).wait().forEach(f => diff(dirPath + f));
                 } else if (targetStat.isFile()) {
                     if (filePath in delta.copy) {
                         let source = delta.copy[filePath];
-                        let srcStat = this.$fs.getFsStats(source).wait();
+                        let srcStat = this.$fs.getFsStats(join(this.project.path, source)).wait();
                         let newer = targetStat.mtime.getTime() < srcStat.mtime.getTime();
                         if (!newer) {
                             delete delta.copy[filePath];
@@ -495,14 +495,14 @@ export namespace Project {
                 }
             };
 
-            if (this.$fs.exists(this.output.app).wait()) {
+            if (this.$fs.exists(join(this.project.path, this.output.app)).wait()) {
                 diff(this.output.app);
             }
-            utils.path.basedirs(this.output.app).filter(dir => this.$fs.exists(dir).wait() && dir in delta.mkdir).forEach(dir => delete delta.mkdir[dir]);
-            if (this.$fs.exists(this.output.modules).wait()) {
+            utils.path.basedirs(this.output.app).filter(dir => this.$fs.exists(join(this.project.path, dir)).wait() && dir in delta.mkdir).forEach(dir => delete delta.mkdir[dir]);
+            if (this.$fs.exists(join(this.project.path, this.output.modules)).wait()) {
                 diff(this.output.modules);
             }
-            utils.path.basedirs(this.output.modules).filter(dir => this.$fs.exists(dir).wait() && dir in delta.mkdir).forEach(dir => delete delta.mkdir[dir]);
+            utils.path.basedirs(this.output.modules).filter(dir => this.$fs.exists(join(this.project.path, dir)).wait() && dir in delta.mkdir).forEach(dir => delete delta.mkdir[dir]);
 
             return delta;
         }
@@ -513,15 +513,13 @@ export namespace Project {
             let rmfile = Object.keys(delta.rmfile);
             let rmdir = Object.keys(delta.rmdir).sort().reverse();
 
-            mkdir.forEach(dir => this.$fs.createDirectory(dir).wait());
+            mkdir.forEach(dir => this.$fs.createDirectory(join(this.project.path, dir)).wait());
             copy.forEach(to => {
                 let from = delta.copy[to];
-                this.$fs.copyFile(from, to).wait();
-                // TODO: Sync is fast on my mac, profile the async version... 
-                // writeFileSync(to, readFileSync(from));
+                this.$fs.copyFile(join(this.project.path, from), join(this.project.path, to)).wait();
             });
-            rmfile.forEach(file => this.$fs.deleteFile(file));
-            rmdir.forEach(dir => this.$fs.deleteDirectory(dir));
+            rmfile.forEach(file => this.$fs.deleteFile(join(this.project.path, file)));
+            rmdir.forEach(dir => this.$fs.deleteDirectory(join(this.project.path, dir)));
 
             this.projectBuildResult.changedScripts = copy.length > 0 || rmfile.length > 0;
         }
