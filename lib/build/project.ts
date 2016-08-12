@@ -1,4 +1,4 @@
-import { join, sep, dirname, basename } from "path";
+import { join, sep, basename, extname } from "path";
 import * as semver from "semver";
 
 export class Project implements IProject {
@@ -22,9 +22,9 @@ export class Project implements IProject {
                 this.source = new Project.Source(this, ["ios", "android"], this.$fs, this.$logger);
 
                 let platforms = {
-                    ios: new Project.Target.iOS(this, this.$fs, this.$logger),
+                    ios: new Project.Target.IOS(this, this.$fs, this.$logger),
                     android: new Project.Target.Android(this, this.$fs, this.$logger)
-                }
+                };
 
                 // Populate the project build result... per platform...
                 switch(platform) {
@@ -53,7 +53,7 @@ export class Project implements IProject {
         if (result instanceof Promise) {
             (<any>result).then(() => this.$logger.trace(label + " ✔"));
         } else {
-            this.$logger.trace(label + " ✔")
+            this.$logger.trace(label + " ✔");
         }
         return result;
     }
@@ -62,14 +62,15 @@ $injector.register("project", Project);
 
 export namespace Project {
     export namespace Package {
-        export interface Json {
+        export interface IJson {
             name?: string;
             version?: string;
             dependencies?: { [key: string]: string };
             devDependencies?: { [key: string]: string };
             nativescript: {
                 id: string;
-            }
+                platforms: { [platform: string]: string }; /* version */
+            };
         }
         export const enum Type {
             App,
@@ -85,29 +86,35 @@ export namespace Project {
         }
     }
 
-    export interface Package {
+    export interface IPackage {
         type: Package.Type;
         name: string;
         path: string;
-        packageJson: Package.Json;
+        packageJson: Package.IJson;
         version: string;
         requiredVersion: string;
         resolvedAtParent: { [key: string]: any; };
         resolvedAtGrandparent: { [key: string]: any; };
-        children: Package[];
-        scriptFiles: string[];
+        children: IPackage[];
         directories: string[];
         availability: Package.Availability;
+
+        scriptFiles: Source.IFile[];
+        nativeFiles: { [platform: string]: Source.IFile[] };
     }
 
-    export interface PackageMap {
-        [dependency: string]: Package;
+    export interface IPackageMap {
+        [dependency: string]: IPackage;
     }
 
     export class Source {
 
-        public app: Package;
-        public packages: PackageMap;
+        public app: IPackage;
+
+        /**
+         * A flattened view of the project dependencies.
+         */
+        public dependencies: IPackageMap;
 
         constructor(private project: Project,
             public platforms: string[],
@@ -125,17 +132,21 @@ export namespace Project {
                 resolvedAtGrandparent: {},
                 children: [],
                 scriptFiles: [],
+                nativeFiles: {},
                 directories: [],
                 availability: Package.Availability.Available
-            }
-            this.packages = {};
+            };
+            this.dependencies = {};
 
             project.track("read dependencies", () => this.selectDependencyPackages(this.app));
-            project.track("read dependency files", () => this.listPackageFiles(this.app));
-            project.track("read app files", () => this.listAppFiles());
+            project.track("read dependencies script files", () => this.listDependencyScriptFiles(this.app));
+            project.track("read dependencies native files", () => this.listDependencyNativeFiles());
+
+            project.track("read app script files", () => this.listAppScriptFiles());
+            project.track("read app native files", () => this.listAppNativeFiles());
 
             let level = this.$logger.getLevel();
-            if (level === "TRACE" || level == "DEBUG") {
+            if (level === "TRACE" || level === "DEBUG") {
                 this.printPackages();
             }
 
@@ -144,7 +155,7 @@ export namespace Project {
             }
         }
 
-        private selectDependencyPackages(pack: Package) {
+        private selectDependencyPackages(pack: IPackage) {
 
             let packageJsonPath = join(this.project.path, pack.path, "package.json");
 
@@ -166,36 +177,36 @@ export namespace Project {
                 if (pack.packageJson.nativescript && pack.packageJson.nativescript.id) {
                     pack.name = pack.packageJson.nativescript.id;
                 }
-            } else if (pack.name in this.packages) {
+            } else if (pack.name in this.dependencies) {
                 // Resolve conflicts
-                let other = this.packages[pack.name];
+                let other = this.dependencies[pack.name];
                 // Get the one with higher version...
                 let packVersion = pack.packageJson.version;
                 let otherVersion = other.packageJson.version;
                 if (semver.gt(packVersion, otherVersion)) {
                     pack.availability = Package.Availability.Available;
                     other.availability = Package.Availability.ShadowedByDiverged;
-                    this.packages[pack.name] = pack;
+                    this.dependencies[pack.name] = pack;
                 } else {
                     pack.availability = Package.Availability.ShadowedByDiverged;
                 }
             } else {
                 pack.availability = Package.Availability.Available;
-                this.packages[pack.name] = pack;
+                this.dependencies[pack.name] = pack;
             }
 
             let resolved: { [key: string]: any; } = {};
             for (let key in pack.resolvedAtParent) {
                 resolved[key] = pack.resolvedAtParent[key];
             }
-            for (var dependency in pack.packageJson.dependencies) {
+            for (let dependency in pack.packageJson.dependencies) {
                 resolved[dependency] = true;
             }
 
-            for (var dependency in pack.packageJson.dependencies) {
+            for (let dependency in pack.packageJson.dependencies) {
                 let requiredVersion = pack.packageJson.dependencies[dependency];
                 let dependencyPath = join(pack.path, "node_modules", dependency);
-                let child: Package = {
+                let child: IPackage = {
                     type: Package.Type.Package,
                     name: dependency,
                     path: dependencyPath,
@@ -206,15 +217,16 @@ export namespace Project {
                     resolvedAtParent: resolved,
                     children: [],
                     scriptFiles: [],
+                    nativeFiles: {},
                     directories: [],
                     availability: Package.Availability.NotInstalled
-                }
+                };
                 pack.children.push(child);
                 this.selectDependencyPackages(child);
             }
         }
 
-        private listAppFiles() {
+        private listAppScriptFiles() {
             let appPath = "app";
             let ignoreFiles = {
                 ["app" + sep + "App_Resources"]: true
@@ -222,53 +234,118 @@ export namespace Project {
 
             if (this.$fs.exists(join(this.project.path, appPath)).wait()) {
                 this.app.directories.push("app/");
-                let listAppFiles = (path: string) => {
-                    this.$fs.readDirectory(join(this.project.path, path)).wait().forEach(f => {
-                        let filePath = path + sep + f;
-                        if (filePath in ignoreFiles) {
+                let listAppFiles = (dir: string) => {
+                    this.$fs.readDirectory(join(this.project.path, dir)).wait().forEach(name => {
+                        let path = dir + sep + name;
+                        if (path in ignoreFiles) {
                             return;
                         }
-                        let dirPath = filePath + sep;
-                        let lstat = this.$fs.getFsStats(join(this.project.path, filePath)).wait();
+                        let dirPath = path + sep;
+                        let absolutePath = join(this.project.path, path);
+                        let lstat = this.$fs.getFsStats(absolutePath).wait();
                         if (lstat.isDirectory()) {
                             this.app.directories.push(dirPath);
-                            listAppFiles(filePath);
+                            listAppFiles(path);
                         } else if (lstat.isFile()) {
-                            this.app.scriptFiles.push(filePath);
+                            let extension = extname(name);
+                            let mtime = lstat.mtime.getTime();
+                            this.app.scriptFiles.push({ path, extension, mtime, name, absolutePath });
                         }
                     });
-                }
+                };
                 listAppFiles(appPath);
             }
         }
 
-        private listPackageFiles(pack: Package) {
+        private listAppNativeFiles() {
+            let appResources = join("app", "App_Resources");
+            this.platforms.forEach(platform => {
+                let platformDir = join(appResources, platform);
+                let absolutePath = join(this.project.path, platformDir);
+                if (this.$fs.exists(absolutePath).wait()) {
+                    this.app.nativeFiles[platform] = [];
+                    this.listAppNativeFilesForPlatform(platform, platformDir);
+                }
+            });
+        }
+
+        private listAppNativeFilesForPlatform(platform: string, dir: string) {
+            this.$fs.readDirectory(dir).wait().forEach(name => {
+                let path = dir + sep + name;
+                let absolutePath = this.project.path + sep + path;
+                let lstat = this.$fs.getFsStats(absolutePath).wait();
+                let mtime = lstat.mtime.getTime();
+                let extension = extname(name);
+                this.app.nativeFiles[platform].push({ name, path, mtime, absolutePath, extension });
+            });
+        }
+
+        private listDependencyNativeFiles() {
+            for (let key in this.dependencies) {
+                this.listNativeFilesInPackage(this.dependencies[key]);
+            }
+        }
+
+        private listNativeFilesInPackage(pack: IPackage) {
+            if (pack.packageJson.nativescript && pack.packageJson.nativescript.platforms) {
+                for (let platform in pack.packageJson.nativescript.platforms) {
+                    let platformDir = join(this.project.path, pack.path, "platforms", platform);
+                    if (this.$fs.exists(platformDir).wait()) {
+                        pack.nativeFiles[platform] = [];
+                        this.listNativePlatformFilesInPackage(pack, platform, join("platforms", platform));
+                    }
+                }
+            }
+        }
+
+        private listNativePlatformFilesInPackage(pack: IPackage, platform: string, dir: string) {
+            this.$fs.readDirectory(this.project.path + sep + pack.path + sep + dir).wait().forEach(name => {
+                let absolutePath = join(this.project.path, pack.path, dir, name);
+                let stats = this.$fs.getFsStats(absolutePath).wait();
+                let path = dir + sep + name;
+                if (stats.isFile()) {
+                    let mtime = stats.mtime.getTime();
+                    let extension = extname(name);
+                    pack.nativeFiles[platform].push({ absolutePath, name, path, mtime, extension });
+                } else if (stats.isDirectory()) {
+                    this.listNativePlatformFilesInPackage(pack, platform, path);
+                }
+            });
+        }
+
+        private listDependencyScriptFiles(pack: IPackage) {
+            // TODO: Use this.packages instead of recursively walking the app's available dependencies
             if (pack.type === Package.Type.Package && pack.availability === Package.Availability.Available) {
                 this.listNestedPackageFiles(pack, pack.path, pack);
             }
-            pack.children.forEach(child => this.listPackageFiles(child));
+            pack.children.forEach(child => this.listDependencyScriptFiles(child));
         }
 
-        private listNestedPackageFiles(pack: Package, dirPath: string, fileScope: Package) {
+        private listNestedPackageFiles(pack: IPackage, dir: string, fileScope: IPackage) {
             // TODO: Once per pack:
             let modulePackageJson = pack.path + sep + "package.json";
             let ignorePaths: { [key:string]: boolean } = {
-                [pack.path + sep + "node_modules"]: true,
-                [pack.path + sep + "platforms"]: true
+                [pack.path + sep + "node_modules"]: true
             };
+            if (pack.packageJson.nativescript) {
+                ignorePaths[pack.path + sep + "platforms"] = true;
+            }
+
+            // TODO: Separate the listing of nested packages.
             let scopePathLength = fileScope.path.length + sep.length;
-            this.$fs.readDirectory(join(this.project.path, dirPath)).wait().forEach(childPath => {
-                let path = dirPath + sep + childPath;
+            this.$fs.readDirectory(join(this.project.path, dir)).wait().forEach(name => {
+                let path = dir + sep + name;
                 if (path in ignorePaths) {
                     return;
                 }
-                let stat = this.$fs.getFsStats(join(this.project.path, path)).wait();
-                if (stat.isDirectory()) {
+                let absolutePath = join(this.project.path, path);
+                let lstat = this.$fs.getFsStats(absolutePath).wait();
+                if (lstat.isDirectory()) {
                     let packageJsonPath = path + sep + "package.json";
-                    if (modulePackageJson != packageJsonPath && this.$fs.exists(join(this.project.path, packageJsonPath)).wait()) {
+                    if (modulePackageJson !== packageJsonPath && this.$fs.exists(join(this.project.path, packageJsonPath)).wait()) {
                         let packageJson = JSON.parse(this.$fs.readText(join(this.project.path, packageJsonPath)).wait());
 
-                        let nestedPackage: Package = {
+                        let nestedPackage: IPackage = {
                             type: Package.Type.Nested,
                             name: path.substr(pack.path.length + sep.length),
                             path,
@@ -279,17 +356,17 @@ export namespace Project {
                             resolvedAtGrandparent: null,
                             children: [],
                             scriptFiles: [],
+                            nativeFiles: {},
                             directories: [],
                             availability: Package.Availability.Available
                         };
 
                         pack.children.push(nestedPackage);
 
-                        if (nestedPackage.name in this.packages) {
-                            let other = this.packages[pack.name];
+                        if (nestedPackage.name in this.dependencies) {
                             pack.availability = Package.Availability.ShadowedByDiverged;
                         } else {
-                            this.packages[nestedPackage.name] = nestedPackage;
+                            this.dependencies[nestedPackage.name] = nestedPackage;
                         }
                         this.listNestedPackageFiles(pack, path, nestedPackage);
                     } else {
@@ -297,9 +374,11 @@ export namespace Project {
                         fileScope.directories.push(relativePath);
                         this.listNestedPackageFiles(pack, path, fileScope);
                     }
-                } else if (stat.isFile()) {
-                    let relativePath = path.substr(scopePathLength);
-                    fileScope.scriptFiles.push(relativePath);
+                } else if (lstat.isFile()) {
+                    path = path.substr(scopePathLength);
+                    let mtime = lstat.mtime.getTime();
+                    let extension = extname(name);
+                    fileScope.scriptFiles.push({ path, name, mtime, extension, absolutePath });
                 }
             });
         }
@@ -310,34 +389,68 @@ export namespace Project {
                 [Package.Availability.NotInstalled]: "(not installed)",
                 [Package.Availability.ShadowedByAncestor]: "(shadowed by ancestor)",
                 [Package.Availability.ShadowedByDiverged]: "(shadowed by diverged)"
-            }
+            };
 
             let avSign: { [key: number]: string } = {
                 [Package.Availability.Available]: "✔",
                 [Package.Availability.NotInstalled]: "✘",
                 [Package.Availability.ShadowedByAncestor]: "✘",
                 [Package.Availability.ShadowedByDiverged]: "✘"
-            }
+            };
 
-            let printPackagesRecursive = (pack: Package, ident: string, parentIsLast: boolean) => {
+            let printPackagesRecursive = (pack: IPackage, ident: string, parentIsLast: boolean) => {
                 this.$logger.trace(ident + (this.app === pack ? "" : (parentIsLast ? "└── " : "├── ")) + avSign[pack.availability] + " " + pack.name + (pack.version ? "@" + pack.version : "") + " " + avLabel[pack.availability] + (pack.scriptFiles.length > 0 ? "(" + pack.scriptFiles.length + ")" : ""));
                 pack.children.forEach((child, index, children) => {
                     let isLast = index === children.length - 1;
                     printPackagesRecursive(child, ident + (this.app === pack ? "" : (parentIsLast ? "    " : "│   ")), isLast);
                 });
-            }
+            };
 
             printPackagesRecursive(this.app, "", true);
         }
 
         private printFiles() {
             this.$logger.debug("app: " + this.app.name);
-            this.app.scriptFiles.forEach(f => this.$logger.debug("  " + f));
-            Object.keys(this.packages).forEach(dependecy => {
-                let pack = this.packages[dependecy];
+            this.app.scriptFiles.forEach(f => this.$logger.debug("  " + f.path));
+            Object.keys(this.dependencies).forEach(dependecy => {
+                let pack = this.dependencies[dependecy];
                 this.$logger.debug("dependency: " + pack.name + " at " + pack.path);
-                pack.scriptFiles.forEach(f => this.$logger.debug("  " + f));
-            })
+                this.$logger.debug("script files:")
+                pack.scriptFiles.forEach(f => this.$logger.debug("  " + f.path));
+                for (let platform in pack.nativeFiles) {
+                    this.$logger.debug("native " + platform + " files:");
+                    pack.nativeFiles[platform].forEach(f => this.$logger.debug("  " + f.path));
+                }
+            });
+        }
+    }
+
+    namespace Source {
+        export interface IFile {
+            /**
+             * Source path relative to the Package.
+             */
+            path: string;
+
+            /**
+             * Absolute path on the local file system.
+             */
+            absolutePath: string;
+
+            /**
+             * File name;
+             */
+            name: string;
+
+            /**
+             * File extension.
+             */
+            extension: string;
+
+            /**
+             * Modified time in milliseconds elapsed after 1 January 1970 00:00:00 UTC.
+             */
+            mtime: number;
         }
     }
 
@@ -346,13 +459,13 @@ export namespace Project {
         public projectBuildResult: IProjectBuildResult = {
             changedNativeProject: false,
             changedScripts: false
-        }
+        };
 
         private source: Source;
 
         constructor(private project: Project,
             private platform: string,
-            private output: Target.OutPaths,
+            private output: Target.IOutPaths,
             public $fs: IFileSystem,
             public $logger: ILogger) {
 
@@ -361,6 +474,9 @@ export namespace Project {
 
         public rebuild() {
             this.project.track("rebuild " + this.platform, () => {
+                // Expand this into a build system...
+
+                // Handles scripts
                 let delta = this.project.track("rebuild delta", () => this.rebuildDelta());
 
                 // Very verbose:
@@ -369,15 +485,36 @@ export namespace Project {
                 }
 
                 this.project.track("apply delta", () => this.applyDelta(delta));
+
+                // TODO: Replace this with the build of all the native resources.
+                this.project.track("check native code", () => {
+                    let hasNativeChanges = false;
+                    let projectAbsolutePath = join(this.project.path, this.output.root, "project");
+                    if (this.$fs.exists(projectAbsolutePath).wait()) {
+                        let outputProjectMtime = this.$fs.getFsStats(projectAbsolutePath).wait().mtime.getTime();
+                        let deps = this.project.source.dependencies;
+                        let hasNewerNativeFiles = (pack: IPackage) => {
+                            let nativeFiles = pack.nativeFiles[this.platform];
+                            return nativeFiles && nativeFiles.some(file => file.mtime > outputProjectMtime);
+                        };
+                        hasNativeChanges = hasNativeChanges
+                            || Object.keys(deps).some(dep => hasNewerNativeFiles(deps[dep]))
+                            || hasNewerNativeFiles(this.project.source.app);
+                    } else {
+                        hasNativeChanges = true;
+                    }
+                    this.$fs.writeFile(projectAbsolutePath, "Last build: " + new Date().toString()).wait();
+                    this.projectBuildResult.changedNativeProject = hasNativeChanges;
+                });
             });
         }
 
-        private printDelta(delta: Target.Delta) {
+        private printDelta(delta: Target.IDelta) {
             this.$logger.debug("mkdir:");
             Object.keys(delta.mkdir).sort().forEach(d => this.$logger.debug("    " + d));
 
             this.$logger.debug("copy:");
-            Object.keys(delta.copy).sort().forEach(f => this.$logger.debug("    " + f + " < " + delta.copy[f]));
+            Object.keys(delta.copy).sort().forEach(f => this.$logger.debug("    " + f + " < " + delta.copy[f].absolutePath));
 
             this.$logger.debug("rmfile:");
             Object.keys(delta.rmfile).sort().forEach(f => this.$logger.debug("    " + f));
@@ -386,19 +523,19 @@ export namespace Project {
             Object.keys(delta.rmdir).sort().reverse().forEach(d => this.$logger.debug("    " + d));
         }
 
-        private buildDelta(): Target.Delta {
+        private buildDelta(): Target.IDelta {
             let platformSuffix = "." + this.platform + ".";
-            let platformSuffixFilter = this.source.platforms.filter(p => p != this.platform).map(p => "." + p + ".");
+            let platformSuffixFilter = this.source.platforms.filter(p => p !== this.platform).map(p => "." + p + ".");
 
-            let delta: Target.Delta = {
+            let delta: Target.IDelta = {
                 mkdir: {},
                 copy: {},
                 rmfile: {},
                 rmdir: {}
-            }
+            };
 
-            function mkdirRecursive(dir: string) {
-                utils.path.basedirs(dir).forEach(dir => delta.mkdir[dir] = true);
+            function mkdirRecursive(baseDir: string) {
+                utils.path.basedirs(baseDir).forEach(dir => delta.mkdir[dir] = true);
             }
 
             mkdirRecursive(this.output.app);
@@ -412,24 +549,24 @@ export namespace Project {
                 } else {
                     return null;
                 }
-            }
+            };
 
             this.source.app.directories.map(mapPath).filter(f => f != null).forEach(file => delta.mkdir[file] = true);
-            this.source.app.scriptFiles.forEach(file => delta.copy[mapPath(file)] = file);
+            this.source.app.scriptFiles.forEach(file => delta.copy[mapPath(file.path)] = file);
 
-            let copyAll = (pack: Package): void => {
+            let copyAll = (pack: IPackage): void => {
                 pack.scriptFiles.forEach(file => {
-                    if (platformSuffixFilter.some(f => file.indexOf(f) >= 0)) {
+                    if (platformSuffixFilter.some(f => file.name.indexOf(f) >= 0)) {
                         return;
                     }
-                    let from = pack.path + sep + file;
-                    let to = this.output.modules + sep + pack.name + sep + file.replace(platformSuffix, ".");
+                    // TODO: file.path may contain .android. or .ios. in a directory instead of the file name... use file.dir + sep + file.name.replace...
+                    let to = this.output.modules + sep + pack.name + sep + file.path.replace(platformSuffix, ".");
                     // TODO: If `to in delta.copy`, log collision.
-                    delta.copy[to] = from;
+                    delta.copy[to] = file;
                 });
-            }
+            };
 
-            let mkdirAll = (pack: Package): void => {
+            let mkdirAll = (pack: IPackage): void => {
                 if (pack.type === Package.Type.App) {
                     return;
                 }
@@ -441,13 +578,13 @@ export namespace Project {
                 });
 
                 pack.directories.forEach(dir => {
-                    let path = this.output.modules + sep + pack.name + sep + dir + sep;
+                    path = this.output.modules + sep + pack.name + sep + dir + sep;
                     delta.mkdir[path] = true;
                 });
-            }
+            };
 
-            for (let key in this.source.packages) {
-                let pack = this.source.packages[key];
+            for (let key in this.source.dependencies) {
+                let pack = this.source.dependencies[key];
                 copyAll(pack);
                 mkdirAll(pack);
             }
@@ -455,10 +592,10 @@ export namespace Project {
             return delta;
         }
 
-        private rebuildDelta(): Target.Delta {
+        private rebuildDelta(): Target.IDelta {
             let buildDelta = this.buildDelta();
 
-            let delta: Target.Delta = {
+            let delta: Target.IDelta = {
                 copy: buildDelta.copy,
                 mkdir: buildDelta.mkdir,
                 rmdir: {},
@@ -473,6 +610,7 @@ export namespace Project {
                 diffed[filePath] = true;
 
                 let dirPath = filePath + sep;
+                // TODO: Consider making Source.File-s from entries in the platforms/ios and platform/android.
                 let targetStat = this.$fs.getFsStats(join(this.project.path, filePath)).wait();
                 if (targetStat.isDirectory()) {
                     if (dirPath in delta.mkdir) {
@@ -484,8 +622,7 @@ export namespace Project {
                 } else if (targetStat.isFile()) {
                     if (filePath in delta.copy) {
                         let source = delta.copy[filePath];
-                        let srcStat = this.$fs.getFsStats(join(this.project.path, source)).wait();
-                        let newer = targetStat.mtime.getTime() < srcStat.mtime.getTime();
+                        let newer = targetStat.mtime.getTime() < source.mtime;
                         if (!newer) {
                             delete delta.copy[filePath];
                         }
@@ -507,7 +644,7 @@ export namespace Project {
             return delta;
         }
 
-        private applyDelta(delta: Target.Delta) {
+        private applyDelta(delta: Target.IDelta) {
             let mkdir = Object.keys(delta.mkdir).sort();
             let copy = Object.keys(delta.copy);
             let rmfile = Object.keys(delta.rmfile);
@@ -516,7 +653,7 @@ export namespace Project {
             mkdir.forEach(dir => this.$fs.createDirectory(join(this.project.path, dir)).wait());
             copy.forEach(to => {
                 let from = delta.copy[to];
-                this.$fs.copyFile(join(this.project.path, from), join(this.project.path, to)).wait();
+                this.$fs.copyFile(from.absolutePath, join(this.project.path, to)).wait();
             });
             rmfile.forEach(file => this.$fs.deleteFile(join(this.project.path, file)));
             rmdir.forEach(dir => this.$fs.deleteDirectory(join(this.project.path, dir)));
@@ -526,24 +663,37 @@ export namespace Project {
     }
 
     export namespace Target {
-        export interface Delta {
-            copy: { [to: string]: /* from: */ string },
-            mkdir: { [dir: string]: boolean } /* Set<string> */
-            rmfile: { [dir: string]: boolean } /* Set<string> */,
-            rmdir: { [dir: string]: boolean } /* Set<string> */,
+        export interface IDelta {
+            copy: { [to: string]: Source.IFile };
+            mkdir: { [dir: string]: boolean }; /* Set<string> */
+            rmfile: { [dir: string]: boolean }; /* Set<string> */
+            rmdir: { [dir: string]: boolean }; /* Set<string> */
         }
 
-        export interface OutPaths {
+        export interface IOutPaths {
+            /**
+             * The location where app resources should be deployed, relative to the project root.
+             */
             app: string;
+
+            /**
+             * The location where flattened modules should be deployed, relative to the project root.
+             */
             modules: string;
+
+            /**
+             * The root directory holding all the output for this target, ex: "platforms/android", "platforms/ios", etc, relative to the project root.
+             */
+            root: string;
         }
 
-        export class iOS extends Target {
+        export class IOS extends Target {
             constructor(project: Project,
                 $fs: IFileSystem,
                 $logger: ILogger) {
 
                 super(project, "ios", {
+                    root: join("platforms", "ios"),
                     // TODO: This basename tries to figure out the xcode project name... inject from outside.
                     app: join("platforms", "ios", basename(project.path), "app"),
                     modules: join("platforms", "ios", basename(project.path), "app", "tns_modules")
@@ -557,8 +707,9 @@ export namespace Project {
                 $logger: ILogger) {
 
                 super(project, "android", {
+                    root: join("platforms", "android"),
                     app: join("platforms", "android", "src", "main", "assets", "app"),
-                    modules: join("platforms", "android", "src", "main", "assets", "app", "tns_modules")
+                    modules: join("platforms", "android", "src", "main", "assets", "app", "tns_modules"),
                 }, $fs, $logger);
             }
         }
