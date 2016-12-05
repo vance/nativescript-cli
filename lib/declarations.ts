@@ -52,7 +52,6 @@ interface IOpener {
 
 interface ILiveSyncService {
 	liveSync(platform: string, applicationReloadAction?: (deviceAppData: Mobile.IDeviceAppData, localToDevicePaths: Mobile.ILocalToDevicePathData[]) => IFuture<void>): IFuture<void>;
-	forceExecuteFullSync: boolean;
 }
 
 interface IPlatformLiveSyncService {

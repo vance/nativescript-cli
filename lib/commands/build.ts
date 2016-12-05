@@ -5,7 +5,8 @@ export class BuildCommandBase {
 	executeCore(args: string[]): IFuture<void> {
 		return (() => {
 			let platform = args[0].toLowerCase();
-			this.$platformService.buildPlatform(platform, null, true).wait();
+			this.$platformService.preparePlatform(platform).wait();
+			this.$platformService.buildPlatform(platform, null).wait();
 			if(this.$options.copyTo) {
 				this.$platformService.copyLastOutput(platform, this.$options.copyTo, {isForDevice: this.$options.forDevice}).wait();
 			}

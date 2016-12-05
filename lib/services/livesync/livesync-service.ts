@@ -3,11 +3,9 @@ import * as helpers from "../../common/helpers";
 import * as path from "path";
 import * as semver from "semver";
 import * as fiberBootstrap from "../../common/fiber-bootstrap";
-
-let gaze = require("gaze");
+let choki = require("chokidar");
 
 class LiveSyncService implements ILiveSyncService {
-	public forceExecuteFullSync = false;
 	private _isInitialized = false;
 
 	constructor(private $devicePlatformsConstants: Mobile.IDevicePlatformsConstants,
@@ -80,7 +78,7 @@ class LiveSyncService implements ILiveSyncService {
 
 	private prepareLiveSyncData(platform: string): ILiveSyncData {
 		platform = platform || this.$devicesService.platform;
-		this.$platformService.preparePlatform(platform.toLowerCase()).wait();
+		this.$platformService.preparePlatform(platform).wait();
 		let platformData = this.$platformsData.getPlatformData(platform.toLowerCase());
 		if (this.$mobileHelper.isAndroidPlatform(platform)) {
 			this.ensureAndroidFrameworkVersion(platformData).wait();
@@ -89,9 +87,8 @@ class LiveSyncService implements ILiveSyncService {
 			platform: platform,
 			appIdentifier: this.$projectData.projectId,
 			projectFilesPath: path.join(platformData.appDestinationDirectoryPath, constants.APP_FOLDER_NAME),
-			syncWorkingDirectory: path.join(this.$projectData.projectDir, constants.APP_FOLDER_NAME),
-			excludedProjectDirsAndFiles: this.$options.release ? constants.LIVESYNC_EXCLUDED_FILE_PATTERNS : [],
-			forceExecuteFullSync: this.forceExecuteFullSync
+			syncWorkingDirectory: this.$projectData.projectDir,
+			excludedProjectDirsAndFiles: this.$options.release ? constants.LIVESYNC_EXCLUDED_FILE_PATTERNS : []
 		};
 
 		return liveSyncData;
@@ -122,25 +119,29 @@ class LiveSyncService implements ILiveSyncService {
 
 	private partialSync(syncWorkingDirectory: string, onChangedActions: ((event: string, filePath: string, dispatcher: IFutureDispatcher) => void )[]): void {
 		let that = this;
-
-		let gazeWatcher = gaze("**/*", { cwd: syncWorkingDirectory, follow: true }, function (err: any, watcher: any) {
-			this.on('all', (event: string, filePath: string) => {
-				fiberBootstrap.run(() => {
-					that.$dispatcher.dispatch(() => (() => {
-						try {
-							for (let i = 0; i < onChangedActions.length; i++) {
-								onChangedActions[i](event, filePath, that.$dispatcher);
-							}
-						} catch (err) {
-							that.$logger.info(`Unable to sync file ${filePath}. Error is:${err.message}`.red.bold);
-							that.$logger.info("Try saving it again or restart the livesync operation.");
+		let pattern = ["app"];
+		if (this.$options.syncAllFiles) {
+			pattern = pattern.concat(["package.json", "node_modules"]);
+		}
+		let watcher = choki.watch(pattern, { ignoreInitial: true, cwd: syncWorkingDirectory }).on("all", (event: string, filePath: string) => {
+			fiberBootstrap.run(() => {
+				that.$dispatcher.dispatch(() => (() => {
+					try {
+						for (let i = 0; i < onChangedActions.length; i++) {
+							onChangedActions[i](event, filePath, that.$dispatcher);
 						}
-					}).future<void>()());
-				});
+					} catch (err) {
+						that.$logger.info(`Unable to sync file ${filePath}. Error is:${err.message}`.red.bold);
+						that.$logger.info("Try saving it again or restart the livesync operation.");
+					}
+				}).future<void>()());
 			});
 		});
 
-		this.$processService.attachToProcessExitSignals(this, () => gazeWatcher.close());
+		this.$processService.attachToProcessExitSignals(this, () => {
+			watcher.unwatch(pattern);
+			process.exit();
+		});
 		this.$dispatcher.run();
 	}
 }

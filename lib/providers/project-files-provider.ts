@@ -15,9 +15,17 @@ export class ProjectFilesProvider extends ProjectFilesProviderBase {
 
 	public mapFilePath(filePath: string, platform: string): string {
 		let platformData = this.$platformsData.getPlatformData(platform.toLowerCase());
-		let projectFilesPath = path.join(platformData.appDestinationDirectoryPath, constants.APP_FOLDER_NAME);
 		let parsedFilePath = this.getPreparedFilePath(filePath);
-		let mappedFilePath = path.join(projectFilesPath, path.relative(path.join(this.$projectData.projectDir, constants.APP_FOLDER_NAME), parsedFilePath));
+		let mappedFilePath = "";
+		if (_.startsWith(parsedFilePath, "node_modules")) {
+			let relativePath = path.relative("node_modules", parsedFilePath);
+			if (_.startsWith(relativePath, "tns-core-modules")) {
+				relativePath = path.relative("tns-core-modules", relativePath);
+			}
+			mappedFilePath = path.join(platformData.appDestinationDirectoryPath, constants.APP_FOLDER_NAME, constants.TNS_MODULES_FOLDER_NAME, relativePath);
+		} else {
+			mappedFilePath = path.join(platformData.appDestinationDirectoryPath, parsedFilePath);
+		}
 
 		let appResourcesDirectoryPath = path.join(constants.APP_FOLDER_NAME, constants.APP_RESOURCES_FOLDER_NAME);
 		let platformSpecificAppResourcesDirectoryPath = path.join(appResourcesDirectoryPath, platformData.normalizedPlatformName);

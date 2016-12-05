@@ -8,10 +8,15 @@ export interface IPrepareInfo {
 	release: boolean;
 }
 
-export class ProjectChangesInfo {
+export class ProjectChangesInfo implements IProjectChangesInfo {
 
 	public get hasChanges(): boolean {
-		return this.appFilesChanged || this.appResourcesChanged || this.modulesChanged || this.configChanged;
+		return this.packageChanged || this.appFilesChanged || this.appResourcesChanged || this.modulesChanged || this.configChanged;
+	}
+
+	public get changesRequireBuild(): boolean {
+		let change = this.packageChanged || this.appResourcesChanged || this.nativeChanged;
+		return change;
 	}
 
 	public appFilesChanged: boolean = false;
@@ -19,6 +24,10 @@ export class ProjectChangesInfo {
 	public modulesChanged: boolean = false;
 	public configChanged: boolean = false;
 	public prepareInfo: IPrepareInfo;
+	public packageChanged: boolean = false;
+	public nativeChanged: boolean = false;
+
+	private newFiles: number = 0;
 
 	constructor(platform: string,
 		private force: boolean,
@@ -43,8 +52,15 @@ export class ProjectChangesInfo {
 				this.prepareInfo = this.$fs.readJson(buildInfoFile).wait();
 				this.appFilesChanged = this.containsNewerFiles(this.$projectData.appDirectoryPath, this.$projectData.appResourcesDirectoryPath, outputProjectMtime);
 				if (!skipModulesAndResources) {
+					this.packageChanged = this.filesChanged([path.join(this.$projectData.projectDir, "package.json")], outputProjectMtime);
 					this.appResourcesChanged = this.containsNewerFiles(this.$projectData.appResourcesDirectoryPath, null, outputProjectMtime);
-					this.modulesChanged = this.containsNewerFiles(path.join(this.$projectData.projectDir, "node_modules"), path.join(this.$projectData.projectDir, "node_modules", "tns-ios-inspector")/*done because currently all node_modules are traversed, a possible improvement could be traversing only production dependencies*/, outputProjectMtime);
+					/*done because currently all node_modules are traversed, a possible improvement could be traversing only the production dependencies*/
+					this.nativeChanged = this.containsNewerFiles(path.join(this.$projectData.projectDir, "node_modules"),
+											path.join(this.$projectData.projectDir, "node_modules", "tns-ios-inspector"),
+											outputProjectMtime, ProjectChangesInfo.fileChangeRequiresBuild);
+					if (this.newFiles > 0) {
+						this.modulesChanged = true;
+					}
 					let platformResourcesDir = path.join(this.$projectData.appResourcesDirectoryPath, platformData.normalizedPlatformName);
 					if (platform === this.$devicePlatformsConstants.iOS.toLowerCase()) {
 						this.configChanged = this.filesChanged([
@@ -67,6 +83,9 @@ export class ProjectChangesInfo {
 					this.configChanged = true;
 					this.prepareInfo.release = this.$options.release;
 					this.prepareInfo.bundle = this.$options.bundle;
+				}
+				if (this.packageChanged) {
+					this.modulesChanged = true;
 				}
 				if (this.modulesChanged || this.appResourcesChanged) {
 					this.configChanged = true;
@@ -91,7 +110,7 @@ export class ProjectChangesInfo {
 		return false;
 	}
 
-	private containsNewerFiles(dir: string, skipDir: string, mtime: number): boolean {
+	private containsNewerFiles(dir: string, skipDir: string, mtime: number, processFunc?: (filePath: string, projectDir: string, fs: IFileSystem) => boolean): boolean {
 		let files = this.$fs.readDirectory(dir).wait();
 		for (let file of files) {
 			let filePath = path.join(dir, file);
@@ -99,19 +118,59 @@ export class ProjectChangesInfo {
 				continue;
 			}
 			let fileStats = this.$fs.getFsStats(filePath).wait();
-			if (fileStats.mtime.getTime() > mtime) {
-				return true;
+			let changed = fileStats.mtime.getTime() > mtime;
+			if (!changed) {
+				let lFileStats = this.$fs.getLsStats(filePath).wait();
+				changed = lFileStats.mtime.getTime() > mtime;
 			}
-			let lFileStats = this.$fs.getLsStats(filePath).wait();
-			if (lFileStats.mtime.getTime() > mtime) {
-				return true;
+			if (changed) {
+				if (processFunc) {
+					this.newFiles ++;
+					let filePathRelative = path.relative(this.$projectData.projectDir, filePath);
+					if (processFunc(filePathRelative, this.$projectData.projectDir, this.$fs)) {
+						return true;
+					}
+				} else {
+					return true;
+				}
 			}
 			if (fileStats.isDirectory()) {
-				if (this.containsNewerFiles(filePath, skipDir, mtime)) {
+				if (this.containsNewerFiles(filePath, skipDir, mtime, processFunc)) {
 					return true;
 				}
 			}
 		}
 		return false;
+	}
+
+	static fileChangeRequiresBuild(file: string, projectDir: string, fs: IFileSystem) {
+		if (path.basename(file) === "package.json") {
+			return true;
+		}
+		if (_.startsWith(file, "node_modules")) {
+			if (!_.startsWith(file, path.join("node_modules", "tns-core-modules"))) {
+				let filePath = file;
+				while(filePath !== "node_modules") {
+					filePath = path.dirname(filePath);
+					let fullFilePath = path.join(projectDir, path.join(filePath, "package.json"));
+					if (fs.exists(fullFilePath).wait()) {
+						let json = fs.readJson(fullFilePath).wait();
+						if (json["nativescript"] && _.startsWith(file, path.join(filePath, "platforms"))) {
+							return true;
+						}
+					}
+				}
+			}
+		}
+		return false;
+	}
+
+	static getLatestPrepareInfo(platformData: IPlatformData, fs: IFileSystem): IPrepareInfo {
+		let prepareInfoFile = path.join(platformData.projectRoot, prepareInfoFileName);
+		if (fs.exists(prepareInfoFile).wait()) {
+			let prepareInfo = fs.readJson(prepareInfoFile).wait();
+			return prepareInfo;
+		}
+		return null;
 	}
 }

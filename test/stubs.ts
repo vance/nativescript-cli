@@ -502,8 +502,6 @@ export class LiveSyncServiceStub implements ILiveSyncService {
 	public liveSync(platform: string, applicationReloadAction?: (deviceAppData: Mobile.IDeviceAppData, localToDevicePaths: Mobile.ILocalToDevicePathData[]) => IFuture<void>): IFuture<void> {
 		return Future.fromResult();
 	}
-
-	public forceExecuteFullSync: boolean;
 }
 
 export class AndroidToolsInfoStub implements IAndroidToolsInfo {

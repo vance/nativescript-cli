@@ -12,8 +12,11 @@ class IOSPlatformLiveSyncService extends PlatformLiveSyncServiceBase {
 		protected $projectFilesManager: IProjectFilesManager,
 		protected $projectFilesProvider: IProjectFilesProvider,
 		protected $platformService: IPlatformService,
+		protected $platformsData: IPlatformsData,
+		protected $devicePlatformsConstants: Mobile.IDevicePlatformsConstants,
+		protected $projectData: IProjectData,
 		protected $liveSyncProvider: ILiveSyncProvider) {
-		super(_liveSyncData, $devicesService, $mobileHelper, $logger, $options, $deviceAppDataFactory, $fs, $injector, $projectFilesManager, $projectFilesProvider, $platformService, $liveSyncProvider);
+		super(_liveSyncData, $devicesService, $mobileHelper, $logger, $options, $deviceAppDataFactory, $fs, $injector, $projectFilesManager, $projectFilesProvider, $platformService, $platformsData, $devicePlatformsConstants, $projectData, $liveSyncProvider);
 	}
 
 	public fullSync(postAction?: (deviceAppData: Mobile.IDeviceAppData, localToDevicePaths: Mobile.ILocalToDevicePathData[]) => IFuture<void>): IFuture<void> {
@@ -25,25 +28,17 @@ class IOSPlatformLiveSyncService extends PlatformLiveSyncServiceBase {
 
 			let action = (device: Mobile.IDevice): IFuture<void> => {
 				return (() => {
-					let deviceAppData = this.$deviceAppDataFactory.create(appIdentifier, this.$mobileHelper.normalizePlatformName(platform), device);
-					let installed = this.tryInstallApplication(device, deviceAppData).wait();
+					this.deploy(device);
+					let deviceAppData = this.$deviceAppDataFactory.create(this.liveSyncData.appIdentifier, this.$mobileHelper.normalizePlatformName(platform), device);
 					let localToDevicePaths = this.$projectFilesManager.createLocalToDevicePaths(deviceAppData, projectFilesPath, null, this.liveSyncData.excludedProjectDirsAndFiles);
-					let afterSyncAction: () => IFuture<void>;
-
 					this.transferFiles(deviceAppData, localToDevicePaths, this.liveSyncData.projectFilesPath, true).wait();
-
-					if(installed) {
-						afterSyncAction = () => device.applicationManager.tryStartApplication(deviceAppData.appIdentifier);
-					} else {
-						afterSyncAction = () => this.refreshApplication(deviceAppData, localToDevicePaths);
-					}
 
 					if (postAction) {
 						this.finishLivesync(deviceAppData).wait();
 						return postAction(deviceAppData, localToDevicePaths).wait();
 					}
 
-					afterSyncAction().wait();
+					this.refreshApplication(deviceAppData, localToDevicePaths).wait();
 					this.finishLivesync(deviceAppData).wait();
 				}).future<void>()();
 			};
