@@ -3,9 +3,7 @@ import * as temp from "temp";
 
 export class LiveSyncProvider implements ILiveSyncProvider {
 	constructor(private $androidLiveSyncServiceLocator: {factory: Function},
-		private $androidPlatformLiveSyncServiceLocator: {factory: Function},
 		private $iosLiveSyncServiceLocator: {factory: Function},
-		private $iosPlatformLiveSyncServiceLocator: {factory: Function},
 		private $platformService: IPlatformService,
 		private $platformsData: IPlatformsData,
 		private $logger: ILogger,
@@ -31,26 +29,6 @@ export class LiveSyncProvider implements ILiveSyncProvider {
 				}
 
 				return this.deviceSpecificLiveSyncServicesCache[_device.deviceInfo.identifier];
-			}
-		};
-	}
-
-	private platformSpecificLiveSyncServicesCache: IDictionary<any> = {};
-	public get platformSpecificLiveSyncServices(): IDictionary<any> {
-		return {
-			android: (_liveSyncData: ILiveSyncData, $injector: IInjector) => {
-				if(!this.platformSpecificLiveSyncServicesCache[this.$devicePlatformsConstants.Android]) {
-					this.platformSpecificLiveSyncServicesCache[this.$devicePlatformsConstants.Android] = $injector.resolve(this.$androidPlatformLiveSyncServiceLocator.factory, { _liveSyncData: _liveSyncData });
-				}
-
-				return this.platformSpecificLiveSyncServicesCache[this.$devicePlatformsConstants.Android];
-			},
-			ios: (_liveSyncData: ILiveSyncData, $injector: IInjector) => {
-				if(!this.platformSpecificLiveSyncServicesCache[this.$devicePlatformsConstants.iOS]) {
-					this.platformSpecificLiveSyncServicesCache[this.$devicePlatformsConstants.iOS] = $injector.resolve(this.$iosPlatformLiveSyncServiceLocator.factory, { _liveSyncData: _liveSyncData });
-				}
-
-				return this.platformSpecificLiveSyncServicesCache[this.$devicePlatformsConstants.iOS];
 			}
 		};
 	}
@@ -88,11 +66,12 @@ export class LiveSyncProvider implements ILiveSyncProvider {
 				let tempZip = temp.path({prefix: "sync", suffix: ".zip"});
 				this.$logger.trace("Creating zip file: " + tempZip);
 
-				if (this.$options.syncAllFiles) {
+//				if (this.$options.syncAllFiles) {
 					this.$childProcess.spawnFromEvent("zip", [ "-r", "-0", tempZip, "app" ], "close", { cwd: path.dirname(projectFilesPath) }).wait();
-				} else {
-					this.$childProcess.spawnFromEvent("zip", [ "-r", "-0", tempZip, "app", "-x", "app/tns_modules/*" ], "close", { cwd: path.dirname(projectFilesPath) }).wait();
-				}
+				// } else {
+				// 	this.$logger.info("Skipping node_modules folder!");
+				// 	this.$childProcess.spawnFromEvent("zip", [ "-r", "-0", tempZip, "app", "-x", "app/tns_modules/*" ], "close", { cwd: path.dirname(projectFilesPath) }).wait();
+				// }
 
 				deviceAppData.device.fileSystem.transferFiles(deviceAppData, [{
 					getLocalPath: () => tempZip,
