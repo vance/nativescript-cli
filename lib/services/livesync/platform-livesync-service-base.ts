@@ -6,6 +6,7 @@ import * as minimatch from "minimatch";
 import * as constants from "../../common/constants";
 import * as util from "util";
 import {ProjectChangesInfo,IPrepareInfo} from "../project-changes-info";
+import * as shelljs from "shelljs";
 
 const livesyncInfoFileName = ".nslivesyncinfo";
 
@@ -54,12 +55,30 @@ export abstract class PlatformLiveSyncServiceBase implements IPlatformLiveSyncSe
 						return postAction(deviceAppData, localToDevicePaths).wait();
 					}
 
+					// let filePath = "/Users/raikov/test.txt";
+					// let syncFileData = this.$projectFilesManager.createLocalToDevicePaths(deviceAppData, projectFilesPath, [filePath], null);
+					// let deviceFilePath = path.join(syncFileData[0].deviceProjectRootPath, path.basename(filePath));
+					// device.fileSystem.putFile(filePath, deviceFilePath).wait();
+					// let text = this.readFile(device, deviceFilePath).wait();
+
 					this.refreshApplication(deviceAppData, localToDevicePaths).wait();
 					this.finishLivesync(deviceAppData).wait();
 				}).future<void>()();
 			};
 			this.$devicesService.execute(action, canExecute).wait();
 		}).future<void>()();
+	}
+
+	private readFile(device: Mobile.IDevice, deviceFilePath: string): IFuture<string> {
+		return (() => {
+			let fileName = path.basename(deviceFilePath);
+			let uniqueFilePath = path.join(shelljs.tempdir(), this.$fs.getUniqueFileName(fileName));
+			let devicePath = path.dirname(deviceFilePath);
+			device.fileSystem.getFile(deviceFilePath, uniqueFilePath).wait();
+			let text = this.$fs.readText(uniqueFilePath);
+			shelljs.rm(uniqueFilePath);
+			return text;
+		}).future<string>()();
 	}
 
 	public partialSync(event: string, filePath: string, dispatcher: IFutureDispatcher, afterFileSyncAction: (deviceAppData: Mobile.IDeviceAppData, localToDevicePaths: Mobile.ILocalToDevicePathData[]) => IFuture<void>): void {
