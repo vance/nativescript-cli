@@ -66,12 +66,12 @@ export class LiveSyncProvider implements ILiveSyncProvider {
 				let tempZip = temp.path({prefix: "sync", suffix: ".zip"});
 				this.$logger.trace("Creating zip file: " + tempZip);
 
-//				if (this.$options.syncAllFiles) {
+				if (this.$options.syncAllFiles) {
 					this.$childProcess.spawnFromEvent("zip", [ "-r", "-0", tempZip, "app" ], "close", { cwd: path.dirname(projectFilesPath) }).wait();
-				// } else {
-				// 	this.$logger.info("Skipping node_modules folder!");
-				// 	this.$childProcess.spawnFromEvent("zip", [ "-r", "-0", tempZip, "app", "-x", "app/tns_modules/*" ], "close", { cwd: path.dirname(projectFilesPath) }).wait();
-				// }
+				} else {
+				 	this.$logger.info("Skipping node_modules folder!");
+				 	this.$childProcess.spawnFromEvent("zip", [ "-r", "-0", tempZip, "app", "-x", "app/tns_modules/*" ], "close", { cwd: path.dirname(projectFilesPath) }).wait();
+				}
 
 				deviceAppData.device.fileSystem.transferFiles(deviceAppData, [{
 					getLocalPath: () => tempZip,

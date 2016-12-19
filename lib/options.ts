@@ -39,7 +39,7 @@ export class Options extends commonOptionsLibPath.OptionsBase {
 			all: { type: OptionType.Boolean },
 			teamId: { type: OptionType.String },
 			rebuild: { type: OptionType.Boolean, default: true },
-			syncAllFiles: { type: OptionType.Boolean },
+			syncAllFiles: { type: OptionType.Boolean, default: true },
 			liveEdit: { type: OptionType.Boolean },
 			chrome: { type: OptionType.Boolean }
 		},

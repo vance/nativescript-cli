@@ -117,7 +117,6 @@ class LiveSyncService implements ILiveSyncService {
 		let that = this;
 		let pattern = ["app", "package.json", "node_modules"];
 		let watcher = choki.watch(pattern, { ignoreInitial: true, cwd: syncWorkingDirectory }).on("all", (event: string, filePath: string) => {
-			this.$logger.info("Detected changes...");
 			fiberBootstrap.run(() => {
 				that.$dispatcher.dispatch(() => (() => {
 					try {

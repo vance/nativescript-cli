@@ -233,6 +233,8 @@ export class PlatformService implements IPlatformService {
 	private preparePlatformCore(platform: string): IFuture<void> {
 		return (() => {
 
+			this.$logger.info("Preparing project...");
+
 			let platformData = this.$platformsData.getPlatformData(platform);
 
 			if (this._changesInfo.appFilesChanged) {
@@ -261,7 +263,7 @@ export class PlatformService implements IPlatformService {
 
 			platformData.platformProjectService.interpolateConfigurationFile().wait();
 
-			this.$logger.out("Project successfully prepared (" + platform + ")");
+			this.$logger.info("Project successfully prepared (" + platform + ")");
 		}).future<void>()();
 	}
 
@@ -327,6 +329,7 @@ export class PlatformService implements IPlatformService {
 
 	public buildPlatform(platform: string, buildConfig?: IBuildConfig): IFuture<void> {
 		return (() => {
+			this.$logger.out("Building project...");
 			let platformData = this.$platformsData.getPlatformData(platform);
 			platformData.platformProjectService.buildProject(platformData.projectRoot, buildConfig).wait();
 			let prepareInfo = ProjectChangesInfo.getLatestPrepareInfo(platformData, this.$fs);
@@ -337,7 +340,7 @@ export class PlatformService implements IPlatformService {
 		}).future<void>()();
 	}
 
-	public shouldBuild(platform: string, buildConfig: IBuildConfig): IFuture<boolean> {
+	public shouldBuild(platform: string, buildConfig?: IBuildConfig): IFuture<boolean> {
 		return (() => {
 			let platformData = this.$platformsData.getPlatformData(platform);
 			let prepareInfo = ProjectChangesInfo.getLatestPrepareInfo(platformData, this.$fs);
@@ -439,6 +442,7 @@ export class PlatformService implements IPlatformService {
 						let buildConfig: IBuildConfig = {};
 						let isSimulator = this.$devicesService.isiOSSimulator(device);
 						buildConfig.buildForDevice = !isSimulator;
+						this.preparePlatform(platform).wait();
 						if (this.shouldBuild(platform, buildConfig).wait()) {
 							this.buildPlatform(platform, buildConfig).wait();
 						}

@@ -6,6 +6,7 @@ import * as minimatch from "minimatch";
 import * as constants from "../../common/constants";
 import * as util from "util";
 import {ProjectChangesInfo,IPrepareInfo} from "../project-changes-info";
+import * as shelljs from "shelljs";
 
 const livesyncInfoFileName = ".nslivesyncinfo";
 
@@ -38,6 +39,7 @@ export abstract class PlatformLiveSyncServiceBase implements IPlatformLiveSyncSe
 
 	public fullSync(postAction?: (deviceAppData: Mobile.IDeviceAppData, localToDevicePaths: Mobile.ILocalToDevicePathData[]) => IFuture<void>): IFuture<void> {
 		return (() => {
+			this.$logger.info("Syncing...");
 			let appIdentifier = this.liveSyncData.appIdentifier;
 			let platform = this.liveSyncData.platform;
 			let projectFilesPath = this.liveSyncData.projectFilesPath;
@@ -60,6 +62,22 @@ export abstract class PlatformLiveSyncServiceBase implements IPlatformLiveSyncSe
 			};
 			this.$devicesService.execute(action, canExecute).wait();
 		}).future<void>()();
+	}
+
+	public readFile(device: Mobile.IDevice, deviceFilePath: string): IFuture<string> {
+		return (() => {
+			let fileName = path.basename(deviceFilePath);
+			let uniqueFilePath = path.join(shelljs.tempdir(), this.$fs.getUniqueFileName(fileName));
+			try {
+				device.fileSystem.getFile(deviceFilePath, uniqueFilePath).wait();
+			} catch (e) {}
+			if (this.$fs.exists(uniqueFilePath)) {
+				let text = this.$fs.readText(uniqueFilePath);
+				shelljs.rm(uniqueFilePath);
+				return text;
+			}
+			return null;
+		}).future<string>()();
 	}
 
 	public partialSync(event: string, filePath: string, dispatcher: IFutureDispatcher, afterFileSyncAction: (deviceAppData: Mobile.IDeviceAppData, localToDevicePaths: Mobile.ILocalToDevicePathData[]) => IFuture<void>): void {
@@ -109,7 +127,7 @@ export abstract class PlatformLiveSyncServiceBase implements IPlatformLiveSyncSe
 	protected finishLivesync(deviceAppData: Mobile.IDeviceAppData): IFuture<void> {
 		return (() => {
 			// This message is important because it signals Visual Studio Code that livesync has finished and debugger can be attached.
-			this.$logger.info(`Successfully synced application ${deviceAppData.appIdentifier} on device ${deviceAppData.device.deviceInfo.identifier}.`);
+			this.$logger.info(`Successfully synced application ${deviceAppData.appIdentifier} on device ${deviceAppData.device.deviceInfo.identifier}.\n`);
 		}).future<void>()();
 	}
 
@@ -159,6 +177,7 @@ export abstract class PlatformLiveSyncServiceBase implements IPlatformLiveSyncSe
 							for (let platform in this.batch) {
 								let batch = this.batch[platform];
 								batch.syncFiles(((filesToSync:string[]) => {
+									this.$logger.info("Syncing...");
 									this.$platformService.preparePlatform(this.liveSyncData.platform).wait();
 									let canExecute = this.getCanExecuteAction(this.liveSyncData.platform, this.liveSyncData.appIdentifier);
 									let deviceFileAction = (deviceAppData: Mobile.IDeviceAppData, localToDevicePaths: Mobile.ILocalToDevicePathData[]) => this.transferFiles(deviceAppData, localToDevicePaths, this.liveSyncData.projectFilesPath, !filePath);
@@ -212,25 +231,49 @@ export abstract class PlatformLiveSyncServiceBase implements IPlatformLiveSyncSe
 						afterFileSyncAction(deviceAppData, localToDevicePaths).wait();
 					}
 					let platformData = this.$platformsData.getPlatformData(device.deviceInfo.platform);
-					this.saveLivesyncInfo(device, platformData);
+					this.saveLivesyncInfo(device, deviceAppData, platformData);
 				}
 			}).future<void>()();
 		};
 		return action;
 	}
 
+	private getDeviceRootPath(appIdentifier: string): string {
+		return `/data/local/tmp/${appIdentifier}`;
+	}
+
 	protected deploy(device: Mobile.IDevice) {
-		this.$logger.info("Installing...");
+		this.$logger.info("Checkking whether deploy is necessary...");
 		let platformData = this.$platformsData.getPlatformData(device.deviceInfo.platform);
-		if (this.shouldBuildWhenLivesyncing(device, platformData)) {
+		let shouldBuild = this.shouldBuildWhenLivesyncing(device, platformData);
+		if (shouldBuild) {
 			this.$platformService.buildPlatform(this.liveSyncData.platform, { buildForDevice: !device.isEmulator }).wait();
 		}
 		device.applicationManager.checkForApplicationUpdates().wait();
 		let appIdentifier = this.liveSyncData.appIdentifier;
+		let deviceAppData = this.$deviceAppDataFactory.create(this.liveSyncData.appIdentifier, this.$mobileHelper.normalizePlatformName(this.liveSyncData.platform), device);
 		if (device.applicationManager.isApplicationInstalled(appIdentifier).wait()) {
-			device.applicationManager.stopApplication(appIdentifier).wait();
+			if (!shouldBuild) {
+				let livesyncInfoFile = this.getLivesyncInfoFilePath(device);
+				if (this.$fs.exists(livesyncInfoFile)) {
+					let livesyncTime = this.$fs.readText(livesyncInfoFile);
+					let deviceRootPath = deviceAppData.deviceProjectRootPath;
+					if (device.deviceInfo.platform.toLowerCase() === this.$devicePlatformsConstants.Android.toLowerCase()) {
+						deviceRootPath = path.dirname(deviceRootPath);
+					}
+					let deviceFilePath = path.join(deviceRootPath, path.basename(livesyncInfoFile));
+					let livesyncInfo = this.readFile(device, deviceFilePath).wait();
+					if (livesyncTime === livesyncInfo) {
+						//device.applicationManager.stopApplication(appIdentifier).wait();
+						return;
+					}
+				}
+			}
+			this.$logger.info("Uninstalling a previous version of the application ...");
 			device.applicationManager.uninstallApplication(appIdentifier).wait();
+			deviceAppData = this.$deviceAppDataFactory.create(this.liveSyncData.appIdentifier, this.$mobileHelper.normalizePlatformName(this.liveSyncData.platform), device);
 		}
+		this.$logger.info("Installing...");
 		let packageFilePath = "";
 		if (device.isEmulator) {
 			packageFilePath = this.$platformService.getLatestApplicationPackageForEmulator(platformData).packageName;
@@ -238,8 +281,8 @@ export abstract class PlatformLiveSyncServiceBase implements IPlatformLiveSyncSe
 			packageFilePath = this.$platformService.getLatestApplicationPackageForDevice(platformData).packageName;
 		}
 		device.applicationManager.installApplication(packageFilePath).wait();
+		this.saveLivesyncInfo(device, deviceAppData, platformData);
 		this.$logger.info(`Successfully installed on device with identifier '${device.deviceInfo.identifier}'.`);
-		this.saveLivesyncInfo(device, platformData);
 	}
 
 	private changeRequiresDeploy(filesToSync: string[]): boolean {
@@ -253,6 +296,15 @@ export abstract class PlatformLiveSyncServiceBase implements IPlatformLiveSyncSe
 	}
 
 	protected shouldBuildWhenLivesyncing(device: Mobile.IDevice, platformData: IPlatformData): boolean {
+		let buildOutputPath: string;
+		if (device.isEmulator && device.deviceInfo.platform.toLowerCase() === this.$devicePlatformsConstants.iOS.toLowerCase()) {
+			buildOutputPath = platformData.emulatorBuildOutputPath;
+		} else {
+			buildOutputPath = platformData.deviceBuildOutputPath;
+		}
+		if (!this.$fs.exists(buildOutputPath)) {
+			return true;
+		}
 		let prepareInfo = ProjectChangesInfo.getLatestPrepareInfo(platformData, this.$fs);
 		let buildTime = this.$platformService.getLatestBuildTime(platformData.normalizedPlatformName.toLowerCase(), platformData, { buildForDevice: !device.isEmulator });
 		if (prepareInfo.time !== buildTime) {
@@ -266,10 +318,18 @@ export abstract class PlatformLiveSyncServiceBase implements IPlatformLiveSyncSe
 		return false;
 	}
 
-	protected saveLivesyncInfo(device: Mobile.IDevice, platformData: IPlatformData): void {
+	protected saveLivesyncInfo(device: Mobile.IDevice, deviceAppData: Mobile.IDeviceAppData, platformData: IPlatformData): void {
 		let prepareInfo = ProjectChangesInfo.getLatestPrepareInfo(platformData, this.$fs);
 		let livesyncInfoFile = this.getLivesyncInfoFilePath(device);
 		this.$fs.writeFile(livesyncInfoFile, prepareInfo.time);
+		let deviceRootPath = deviceAppData.deviceProjectRootPath;
+		if (device.deviceInfo.platform.toLowerCase() === this.$devicePlatformsConstants.Android.toLowerCase()) {
+			deviceRootPath = path.dirname(deviceRootPath);
+		}
+		let deviceFilePath = path.join(deviceRootPath, path.basename(livesyncInfoFile));
+		try {
+			device.fileSystem.putFile(livesyncInfoFile, deviceFilePath).wait();
+		} catch(e) {}
 	}
 
 	private getLivesyncInfoFilePath(device: Mobile.IDevice): string {

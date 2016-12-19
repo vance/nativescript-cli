@@ -64,6 +64,7 @@ interface IPlatformService {
 
 	getLatestBuildTime(platform: string, platformData: IPlatformData, buildConfig: IBuildConfig): string;
 	getLatestChangesInfo(): IProjectChangesInfo;
+	shouldBuild(platform: string, buildConfig?: IBuildConfig): IFuture<boolean>;
 }
 
 interface IPlatformData {

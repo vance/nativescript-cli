@@ -19,9 +19,6 @@ export class ProjectFilesProvider extends ProjectFilesProviderBase {
 		let mappedFilePath = "";
 		if (_.startsWith(parsedFilePath, "node_modules")) {
 			let relativePath = path.relative("node_modules", parsedFilePath);
-			if (_.startsWith(relativePath, "tns-core-modules")) {
-				relativePath = path.relative("tns-core-modules", relativePath);
-			}
 			mappedFilePath = path.join(platformData.appDestinationDirectoryPath, constants.APP_FOLDER_NAME, constants.TNS_MODULES_FOLDER_NAME, relativePath);
 		} else {
 			mappedFilePath = path.join(platformData.appDestinationDirectoryPath, parsedFilePath);
