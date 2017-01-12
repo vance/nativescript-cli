@@ -95,7 +95,7 @@ export class EmulatorPlatformService implements IEmulatorPlatformService {
                 let emulators = this.getiOSEmulators().wait();
                 let sdk: string = null;
                 let versionStart = idOrName.indexOf("(");
-                if (versionStart > 0) {
+                if (versionStart > 0 && idOrName.indexOf(" inch", versionStart) < 0) {
                     sdk = idOrName.substring(versionStart+1, idOrName.indexOf(")", versionStart)).trim();
                     idOrName = idOrName.substring(0, versionStart-1).trim();
                 }
