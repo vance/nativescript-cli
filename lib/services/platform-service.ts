@@ -450,9 +450,14 @@ export class PlatformService extends EventEmitter implements IPlatformService {
 	}
 
 	public async deployPlatform(platform: string, appFilesUpdaterOptions: IAppFilesUpdaterOptions, deployOptions: IDeployPlatformOptions, projectData: IProjectData, platformSpecificData: IPlatformSpecificData): Promise<void> {
-		await this.preparePlatform(platform, appFilesUpdaterOptions, deployOptions.platformTemplate, projectData, platformSpecificData);
+		let options: Mobile.IDevicesServicesInitializationOptions = {
+			platform: platform, deviceId: deployOptions.device, emulator: deployOptions.emulator
+		};
 		this.$logger.out("Searching for devices...");
-		await this.$devicesService.initialize({ platform: platform, deviceId: deployOptions.device });
+		await this.$devicesService.startEmulatorIfNecessary(options);
+
+		await this.preparePlatform(platform, appFilesUpdaterOptions, deployOptions.platformTemplate, projectData, platformSpecificData);
+		await this.$devicesService.initialize(options);
 		let action = async (device: Mobile.IDevice): Promise<void> => {
 			let buildConfig: IBuildConfig = {
 				buildForDevice: !this.$devicesService.isiOSSimulator(device),
@@ -507,6 +512,7 @@ export class PlatformService extends EventEmitter implements IPlatformService {
 			return this.$emulatorPlatformService.listAvailableEmulators(platform);
 		}
 
+		//todo: plamen5kov: move this functionality if necessary
 		if (emulateOptions.device) {
 			let info = await this.$emulatorPlatformService.getEmulatorInfo(platform, emulateOptions.device);
 			if (info) {
