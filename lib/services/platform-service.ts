@@ -512,7 +512,6 @@ export class PlatformService extends EventEmitter implements IPlatformService {
 			return this.$emulatorPlatformService.listAvailableEmulators(platform);
 		}
 
-		//todo: plamen5kov: move this functionality if necessary
 		if (emulateOptions.device) {
 			let info = await this.$emulatorPlatformService.getEmulatorInfo(platform, emulateOptions.device);
 			if (info) {

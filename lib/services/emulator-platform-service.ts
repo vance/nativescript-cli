@@ -10,7 +10,6 @@ export class EmulatorPlatformService implements IEmulatorPlatformService {
 		private $logger: ILogger,
 		private $androidEmulatorServices: Mobile.IAndroidEmulatorServices) { }
 
-		//todo: plamen5kov: move this functionality once I get things working through the happy path
 	public async startEmulator(info: IEmulatorInfo, projectData: IProjectData): Promise<void> {
 		if (!info.isRunning) {
 			if (this.$mobileHelper.isAndroidPlatform(info.platform)) {
