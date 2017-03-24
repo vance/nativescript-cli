@@ -21,7 +21,7 @@ $injector.require("tnsModulesService", "./services/tns-modules-service");
 $injector.require("platformsData", "./platforms-data");
 $injector.require("platformService", "./services/platform-service");
 
-$injector.require("iOSDebugService", "./services/ios-debug-service");
+$injector.requirePublic("iOSDebugService", "./services/ios-debug-service");
 $injector.require("androidDebugService", "./services/android-debug-service");
 
 $injector.require("userSettingsService", "./services/user-settings-service");

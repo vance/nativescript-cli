@@ -1,4 +1,6 @@
-﻿export class DebugPlatformCommand implements ICommand {
+﻿import { EOL } from "os";
+
+export class DebugPlatformCommand implements ICommand {
 	public allowedParameters: ICommandParameter[] = [];
 
 	constructor(private debugService: IDebugService,
@@ -12,12 +14,24 @@
 		protected $projectData: IProjectData,
 		protected $options: IOptions,
 		protected $platformsData: IPlatformsData) {
-			this.$projectData.initializeProjectData();
-		}
+		this.$projectData.initializeProjectData();
+	}
 
 	public async execute(args: string[]): Promise<void> {
+		const debugOptions: IDebugOptions = {
+			chrome: this.$options.chrome,
+			start: this.$options.start,
+			client: this.$options.client,
+			debugBrk: this.$options.debugBrk,
+			device: this.$options.device,
+			emulator: this.$options.emulator,
+			forDevice: this.$options.forDevice,
+			stop: this.$options.stop,
+			justlaunch: this.$options.justlaunch
+		};
+
 		if (this.$options.start) {
-			return this.debugService.debug(this.$projectData);
+			return this.printDebugInformation(await this.debugService.debug(this.$projectData, debugOptions));
 		}
 
 		const appFilesUpdaterOptions: IAppFilesUpdaterOptions = { bundle: this.$options.bundle, release: this.$options.release };
@@ -45,8 +59,9 @@
 
 			await deviceAppData.device.applicationManager.stopApplication(applicationId);
 
-			await this.debugService.debug(this.$projectData);
+			this.printDebugInformation(await this.debugService.debug(this.$projectData, debugOptions));
 		};
+
 		return this.$usbLiveSyncService.liveSync(this.$devicesService.platform, this.$projectData, applicationReloadAction);
 	}
 
@@ -65,6 +80,13 @@
 		}
 
 		return true;
+	}
+
+	private printDebugInformation(information: string): void {
+		// TODO: do something in the else?
+		if (information) {
+			this.$logger.info(`To start debugging, open the following URL in Chrome:${EOL} ${information}${EOL}`.cyan);
+		}
 	}
 }
 

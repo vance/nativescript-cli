@@ -288,7 +288,7 @@ interface IAndroidToolsInfoData {
 }
 
 interface ISocketProxyFactory {
-	createTCPSocketProxy(factory: () => any): any;
+	createTCPSocketProxy(factory: () => Promise<any>): any;
 	createWebSocketProxy(factory: () => Promise<any>): any;
 }
 

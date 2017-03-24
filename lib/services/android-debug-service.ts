@@ -1,20 +1,10 @@
 import * as net from "net";
-import * as os from "os";
 import { sleep } from "../common/helpers";
 import { ChildProcess } from "child_process";
 
 class AndroidDebugService implements IDebugService {
 	private _device: Mobile.IAndroidDevice = null;
 	private _debuggerClientProcess: ChildProcess;
-
-	constructor(private $devicesService: Mobile.IDevicesService,
-		private $platformService: IPlatformService,
-		private $platformsData: IPlatformsData,
-		private $logger: ILogger,
-		private $options: IOptions,
-		private $errors: IErrors,
-		private $config: IConfiguration,
-		private $androidDeviceDiscovery: Mobile.IDeviceDiscovery) { }
 
 	public get platform() {
 		return "android";
@@ -28,18 +18,41 @@ class AndroidDebugService implements IDebugService {
 		this._device = newDevice;
 	}
 
-	public async debug(projectData: IProjectData): Promise<void> {
-		return this.$options.emulator
-			? this.debugOnEmulator(projectData)
-			: this.debugOnDevice(projectData);
+	constructor(private $devicesService: Mobile.IDevicesService,
+		private $platformService: IPlatformService,
+		private $platformsData: IPlatformsData,
+		private $logger: ILogger,
+		private $errors: IErrors,
+		private $config: IConfiguration,
+		private $androidDeviceDiscovery: Mobile.IDeviceDiscovery) { }
+
+	public async debug(projectData: IProjectData, debugOptions: IDebugOptions): Promise<string> {
+		return debugOptions.emulator
+			? this.debugOnEmulator(projectData, debugOptions)
+			: this.debugOnDevice(projectData, debugOptions);
 	}
 
-	private async debugOnEmulator(projectData: IProjectData): Promise<void> {
+	public async debugStart(projectData: IProjectData, debugOptions: IDebugOptions): Promise<void> {
+		await this.$devicesService.initialize({ platform: this.platform, deviceId: debugOptions.device });
+		let action = (device: Mobile.IAndroidDevice): Promise<void> => {
+			this.device = device;
+			return this.debugStartCore(projectData.projectId, debugOptions);
+		};
+
+		await this.$devicesService.execute(action);
+	}
+
+	public async debugStop(): Promise<void> {
+		this.stopDebuggerClient();
+		return;
+	}
+
+	private async debugOnEmulator(projectData: IProjectData, debugOptions: IDebugOptions): Promise<string> {
 		// Assure we've detected the emulator as device
 		// For example in case deployOnEmulator had stated new emulator instance
 		// we need some time to detect it. Let's force detection.
 		await this.$androidDeviceDiscovery.startLookingForDevices();
-		await this.debugOnDevice(projectData);
+		return this.debugOnDevice(projectData, debugOptions);
 	}
 
 	private isPortAvailable(candidatePort: number): Promise<boolean> {
@@ -108,38 +121,39 @@ class AndroidDebugService implements IDebugService {
 		return this.device.adb.executeCommand(["forward", `tcp:${local}`, `localabstract:${remote}`]);
 	}
 
-	private async debugOnDevice(projectData: IProjectData): Promise<void> {
+	private async debugOnDevice(projectData: IProjectData, debugOptions: IDebugOptions): Promise<string> {
 		let packageFile = "";
 
-		if (!this.$options.start && !this.$options.emulator) {
-			let cachedDeviceOption = this.$options.forDevice;
+		if (!debugOptions.start && !debugOptions.emulator) {
+			let cachedDeviceOption = debugOptions.forDevice;
 
-			this.$options.forDevice = !!cachedDeviceOption;
+			debugOptions.forDevice = !!cachedDeviceOption;
 
 			let platformData = this.$platformsData.getPlatformData(this.platform, projectData);
 			packageFile = this.$platformService.getLatestApplicationPackageForDevice(platformData).packageName;
 			this.$logger.out("Using ", packageFile);
 		}
 
-		await this.$devicesService.initialize({ platform: this.platform, deviceId: this.$options.device });
+		await this.$devicesService.initialize({ platform: this.platform, deviceId: debugOptions.device });
 
-		let action = (device: Mobile.IAndroidDevice): Promise<void> => this.debugCore(device, packageFile, projectData.projectId);
+		let action = (device: Mobile.IAndroidDevice): Promise<string> => this.debugCore(device, packageFile, projectData.projectId, debugOptions);
 
-		await this.$devicesService.execute(action);
+		return this.$devicesService.execute(action);
 	}
 
-	private async debugCore(device: Mobile.IAndroidDevice, packageFile: string, packageName: string): Promise<void> {
+	private async debugCore(device: Mobile.IAndroidDevice, packageFile: string, packageName: string, debugOptions: IDebugOptions): Promise<string> {
 		this.device = device;
 
 		await this.printDebugPort(device.deviceInfo.identifier, packageName);
 
-		if (this.$options.start) {
-			await this.attachDebugger(device.deviceInfo.identifier, packageName);
-		} else if (this.$options.stop) {
+		if (debugOptions.start) {
+			return await this.attachDebugger(device.deviceInfo.identifier, packageName, debugOptions);
+		} else if (debugOptions.stop) {
 			await this.detachDebugger(packageName);
+			return null;
 		} else {
-			await this.startAppWithDebugger(packageFile, packageName);
-			await this.attachDebugger(device.deviceInfo.identifier, packageName);
+			await this.startAppWithDebugger(packageFile, packageName, debugOptions);
+			return await this.attachDebugger(device.deviceInfo.identifier, packageName, debugOptions);
 		}
 	}
 
@@ -148,13 +162,13 @@ class AndroidDebugService implements IDebugService {
 		this.$logger.info("device: " + deviceId + " debug port: " + port + "\n");
 	}
 
-	private async attachDebugger(deviceId: string, packageName: string): Promise<void> {
+	private async attachDebugger(deviceId: string, packageName: string, debugOptions: IDebugOptions): Promise<string> {
 		let startDebuggerCommand = ["am", "broadcast", "-a", `\"${packageName}-debug\"`, "--ez", "enable", "true"];
 		await this.device.adb.executeShellCommand(startDebuggerCommand);
 
-		if (this.$options.client) {
+		if (debugOptions.client) {
 			let port = await this.getForwardedLocalDebugPortForPackageName(deviceId, packageName);
-			this.startDebuggerClient(port);
+			return `chrome-devtools://devtools/bundled/inspector.html?experiments=true&ws=localhost:${port}`;
 		}
 	}
 
@@ -162,37 +176,22 @@ class AndroidDebugService implements IDebugService {
 		return this.device.adb.executeShellCommand(["am", "broadcast", "-a", `${packageName}-debug`, "--ez", "enable", "false"]);
 	}
 
-	private async startAppWithDebugger(packageFile: string, packageName: string): Promise<void> {
-		if (!this.$options.emulator && !this.$config.debugLivesync) {
+	private async startAppWithDebugger(packageFile: string, packageName: string, debugOptions: IDebugOptions): Promise<void> {
+		if (!debugOptions.emulator && !this.$config.debugLivesync) {
 			await this.device.applicationManager.uninstallApplication(packageName);
 			await this.device.applicationManager.installApplication(packageFile);
 		}
-		await this.debugStartCore(packageName);
+		await this.debugStartCore(packageName, debugOptions);
 	}
 
-	public async debugStart(projectData: IProjectData): Promise<void> {
-		await this.$devicesService.initialize({ platform: this.platform, deviceId: this.$options.device });
-		let action = (device: Mobile.IAndroidDevice): Promise<void> => {
-			this.device = device;
-			return this.debugStartCore(projectData.projectId);
-		};
-
-		await this.$devicesService.execute(action);
-	}
-
-	public async debugStop(): Promise<void> {
-		this.stopDebuggerClient();
-		return;
-	}
-
-	private async debugStartCore(packageName: string): Promise<void> {
+	private async debugStartCore(packageName: string, debugOptions: IDebugOptions): Promise<void> {
 		// Arguments passed to executeShellCommand must be in array ([]), but it turned out adb shell "arg with intervals" still works correctly.
 		// As we need to redirect output of a command on the device, keep using only one argument.
 		// We could rewrite this with two calls - touch and rm -f , but -f flag is not available on old Android, so rm call will fail when file does not exist.
 
 		await this.device.applicationManager.stopApplication(packageName);
 
-		if (this.$options.debugBrk) {
+		if (debugOptions.debugBrk) {
 			await this.device.adb.executeShellCommand([`cat /dev/null > /data/local/tmp/${packageName}-debugbreak`]);
 		}
 
@@ -226,16 +225,12 @@ class AndroidDebugService implements IDebugService {
 		}
 	}
 
-	private startDebuggerClient(port: Number): void {
-		this.$logger.info(`To start debugging, open the following URL in Chrome:${os.EOL}chrome-devtools://devtools/bundled/inspector.html?experiments=true&ws=localhost:${port}${os.EOL}`.cyan);
-	}
-
 	private stopDebuggerClient(): void {
 		if (this._debuggerClientProcess) {
 			this._debuggerClientProcess.kill();
 			this._debuggerClientProcess = null;
 		}
 	}
-
 }
+
 $injector.register("androidDebugService", AndroidDebugService);
